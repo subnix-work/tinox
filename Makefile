@@ -42,11 +42,11 @@ clippy:
 # separately in the nextest branch.
 test:
 	@if cargo nextest --version >/dev/null 2>&1; then \
-		cargo nextest run --release --workspace --no-fail-fast && \
-		cargo test --release --workspace --doc; \
+		cargo nextest run --cargo-profile ci --workspace --no-fail-fast && \
+		cargo test --profile ci --workspace --doc; \
 	else \
 		echo "cargo-nextest not installed -- falling back to cargo test (slower)"; \
-		cargo test --release; \
+		cargo test --profile ci; \
 	fi
 
 # End-to-end: golden tests (tests/e2e/*.tnx) + generated context matrix

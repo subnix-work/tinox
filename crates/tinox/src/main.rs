@@ -1139,11 +1139,13 @@ fn build_dev_config_summary_json() -> String {
 /// links against, given the same feature flags that decide what it links.
 /// Pure so it's directly unit-testable; `docker_runtime_packages` below
 /// gathers the (env-var- and tinox.toml-dependent) inputs.
-fn compute_runtime_packages(tls_enabled: bool, db_driver: Option<&str>, extra: &[String]) -> Vec<String> {
+fn compute_runtime_packages(boehm: bool, tls_enabled: bool, db_driver: Option<&str>, extra: &[String]) -> Vec<String> {
     // libgc1: Boehm GC (-lgc). zlib1g: WebSocket permessage-deflate (-lz).
-    // Both linked unconditionally, same as in compile_ll_to_exe. libm/
+    // libm/
     // libpthread need no separate package -- part of glibc (libc6).
-    let mut pkgs = vec!["libgc1".to_string(), "zlib1g".to_string(), "ca-certificates".to_string()];
+    let mut pkgs = Vec::new();
+    if boehm { pkgs.push("libgc1".to_string()); }
+    pkgs.extend(["zlib1g".to_string(), "ca-certificates".to_string()]);
     if tls_enabled {
         pkgs.push("libssl3".to_string());
     }
@@ -1164,7 +1166,7 @@ fn compute_runtime_packages(tls_enabled: bool, db_driver: Option<&str>, extra: &
 /// Reads the same env vars / tinox.toml `[database]` section
 /// `compile_ll_to_exe` reads to decide what to link, so the Docker image's
 /// installed packages track the actual binary instead of guessing.
-fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
+fn docker_runtime_packages(boehm: bool, extra: &[String]) -> Vec<String> {
     let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
     let http3_enabled = tls_enabled
         && std::env::var("TINOX_HTTP3").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
@@ -1178,7 +1180,7 @@ fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
         );
     }
     let db_driver = read_database_config();
-    compute_runtime_packages(tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
+    compute_runtime_packages(boehm, tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
 }
 
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -1295,6 +1297,7 @@ fn stage_source_build(
         tls,
         http3,
         has_dependencies,
+        boehm: native_collector().unwrap_or(Collector::Boehm).links_boehm(),
         labels: &labels,
     });
     let dockerfile_path = ctx_dir.join("Dockerfile");
@@ -1386,7 +1389,11 @@ fn docker_build(args: &[String]) {
     if uid == 0 {
         eprintln!("warning: [docker] uid = 0 -- the container process will run as root");
     }
-    let packages = docker_runtime_packages(&cfg.extra_packages);
+    let boehm = native_collector().unwrap_or_else(|err| {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }).links_boehm();
+    let packages = docker_runtime_packages(boehm, &cfg.extra_packages);
     let build_dir = Path::new(".tinox").join("docker");
     if let Err(e) = fs::create_dir_all(&build_dir) {
         eprintln!("error: cannot create {}: {}", build_dir.display(), e);
@@ -1603,6 +1610,15 @@ fn repl() {
     println!("Bye!");
 }
 
+/// Program text for a statement-block entry: the session declarations plus the entry as the
+/// body of a throwaway function. Statements are newline-terminated, so the entry is used as typed.
+fn repl_statement_source(session_decls: &str, entry: &str, turn: usize) -> String {
+    format!(
+        "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
+        session_decls, turn, entry, turn
+    )
+}
+
 /// Evaluate one REPL entry: either a declaration (saved to session) or an expression (printed).
 fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
     // Detect declarations: starts with fn, class, interface, enum, let, var at top level
@@ -1636,31 +1652,17 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
         return;
     }
 
-    // Detect if this is a statement block (contains ; or multiple lines or let/var)
+    // Detect if this is a statement block (multiple lines or let/var/println/...).
+    // A `;` is not a statement terminator any more (#445), so it is never added
+    // here, and one typed by the user is reported by the parser.
     let lines: Vec<&str> = entry.lines().filter(|l| !l.trim().is_empty()).collect();
-    let has_semicolons = entry.contains(';');
     let is_multi_line = lines.len() > 1;
     let starts_with_stmt = matches!(first_token, "let" | "var" | "println" | "print" | "return");
 
-    let is_stmt_block = is_multi_line || has_semicolons || starts_with_stmt;
+    let is_stmt_block = is_multi_line || starts_with_stmt;
 
     if is_stmt_block {
-        // Ensure each statement line ends with ; (normalize)
-        let body: String = entry.lines()
-            .map(|l| {
-                let t = l.trim_end();
-                if t.is_empty() || t.ends_with(';') || t.ends_with('{') || t.ends_with('}') {
-                    l.to_string()
-                } else {
-                    format!("{};", l)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let src = format!(
-            "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
-            session_decls, turn, body, turn
-        );
+        let src = repl_statement_source(session_decls, entry, turn);
         match repl_compile_and_run(&src, turn) {
             Ok(output) => {
                 if !output.is_empty() {
@@ -1709,13 +1711,34 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
 
 #[cfg(test)]
 mod repl_semantics_tests {
+    /// The REPL writes `/tmp/.tinox_repl_<turn>.*`. Each test runs in its own process and
+    /// process ids are often consecutive, so `pid + k` collides; `pid * 4 + k` (k < 4) cannot.
+    fn repl_test_turn(k: usize) -> usize {
+        std::process::id() as usize * 4 + k
+    }
+
     #[test]
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
         let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
-        let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
+        let output = super::repl_compile_and_run(source, repl_test_turn(0)).unwrap();
         assert_eq!(output.trim(), "0\n1.5");
     }
 
+    #[test]
+    fn multi_line_and_var_entries_are_used_as_typed_without_semicolons() {
+        let entry = "var x: Int64 = 41\nprintln((x + 1).toString())";
+        let source = super::repl_statement_source("", entry, 0);
+        assert!(!source.contains(';'), "{source}");
+        let output = super::repl_compile_and_run(&source, repl_test_turn(1)).unwrap();
+        assert_eq!(output.trim(), "42");
+    }
+
+    #[test]
+    fn a_typed_semicolon_is_reported_not_silently_accepted() {
+        let source = super::repl_statement_source("", "var x: Int64 = 1;\nprintln(x.toString())", 0);
+        let err = super::repl_compile_and_run(&source, repl_test_turn(2)).unwrap_err();
+        assert!(err.contains("semicolons were removed"), "{err}");
+    }
 }
 
 fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
@@ -1734,6 +1757,7 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     cg.set_semantic_facts(checker.semantic_facts());
     let (interfaces, implementations) = checker.interface_info();
     cg.set_interface_info(interfaces, implementations);
+    cg.set_local_gc(native_collector()? == Collector::Tinox);
     cg.gen(&ast).map_err(|e| format!("{:?}", e))?;
     let ir = cg.into_ir();
 
@@ -1743,22 +1767,12 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     fs::write(&ir_path, &ir)
         .map_err(|e| format!("write IR: {}", e))?;
 
-    let runtime_obj = find_runtime_object();
-
-    // Compile to executable
+    // Same toolchain path as `tinox build`, so the REPL links whichever collector the
+    // build would (Tinox GC by default) and shares the runtime flags and cache.
     let exe = format!("{}.out", tmp_base);
-    let mut cmd = Command::new("clang");
-    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm").arg("-lgc").arg("-lz");
-    if let Some(ref rt) = runtime_obj {
-        cmd.arg(rt);
-    }
-
-    let out = cmd.output()
-        .map_err(|e| format!("clang: {}", e))?;
-    if !out.status.success() {
+    if let Err(failure) = compile_ll_to_exe(&ir_path, &exe, OptLevel::Debug) {
         let _ = fs::remove_file(&ir_path);
-        return Err(String::from_utf8_lossy(&out.stderr)
-            .lines().take(3).collect::<Vec<_>>().join("; "));
+        return Err(format!("{failure}").lines().take(3).collect::<Vec<_>>().join("; "));
     }
 
     // Run
@@ -1773,42 +1787,6 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&run_out.stdout).to_string())
-}
-
-fn find_runtime_object() -> Option<String> {
-    // Try common locations for the precompiled runtime.o
-    let candidates = [
-        "runtime/runtime.o",
-        "../runtime/runtime.o",
-        "runtime.o",
-    ];
-    for c in &candidates {
-        if Path::new(c).exists() { return Some(c.to_string()); }
-    }
-    // If runtime.c exists but not runtime.o, compile it on the fly
-    let c_candidates = [
-        "runtime/runtime.c",
-        "../runtime/runtime.c",
-        "runtime.c",
-    ];
-    for c in &c_candidates {
-        if Path::new(c).exists() {
-            let obj = "/tmp/.tinox_runtime.o";
-            let status = Command::new("clang")
-                .args(["-c", c, "-o", obj, "-O3"])
-                .status().ok()?;
-            if status.success() { return Some(obj.to_string()); }
-        }
-    }
-    // Same dev/system resolution used by the main build path (compile_ll_to_exe).
-    if let Some(c) = runtime_c_path() {
-        let obj = "/tmp/.tinox_runtime.o";
-        let status = Command::new("clang")
-            .args(["-c", &c.to_string_lossy(), "-o", obj, "-O3"])
-            .status().ok()?;
-        if status.success() { return Some(obj.to_string()); }
-    }
-    None
 }
 
 /// Declarative schema changelog commands (issue #410).
@@ -2194,8 +2172,9 @@ fn check(args: &[String]) {
         diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
     });
+    let covered: std::cell::RefCell<HashSet<PathBuf>> = std::cell::RefCell::new(HashSet::new());
     let check_one = |input: &str| -> Result<(), Failure> {
-        prepare_program(input).and_then(|(ast, _)| {
+        prepare_program_covering(input, &mut covered.borrow_mut()).and_then(|(ast, _)| {
             let ann = tinox_typecheck::annotations::process_annotations(&ast);
             validate_program_annotations(&ast, &ann, input)?;
             check_declared_exceptions(&ast)?;
@@ -2214,6 +2193,14 @@ fn check(args: &[String]) {
         let mut diagnostics_all: Vec<tinox_common::diagnostic::Diagnostic> = Vec::new();
         let mut seen_diagnostics: HashSet<String> = HashSet::new();
         for file in &files {
+            // A file merged into an earlier program was type-checked, analysed and
+            // import-validated there: re-running the whole pipeline for it is the
+            // quadratic cost that made `tinox check` take half an hour on a large
+            // project. Only files no earlier entry reaches get their own run.
+            let canonical = fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+            if covered.borrow().contains(&canonical) {
+                continue;
+            }
             if let Err(failure) = check_one(file) {
                 for d in failure.0 {
                     if seen_diagnostics.insert(serde_json::to_string(&d).unwrap_or_default()) {
@@ -3490,6 +3477,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     }).collect();
 
     let mut cg = CodeGen::new();
+    cg.set_local_gc(native_collector()? == Collector::Tinox);
     cg.set_expr_value_types(tc.expr_value_types());
     cg.set_semantic_facts(tc.semantic_facts());
     cg.set_interface_info(iface, impls);
@@ -5022,6 +5010,17 @@ fn is_unresolved_name_error(message: &str) -> bool {
 }
 
 fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_typecheck::cache::CheckedProgram), Failure> {
+    prepare_program_covering(input_path, &mut HashSet::new())
+}
+
+/// Like [`prepare_program`], additionally recording in `covered` every file
+/// that was merged into the checked program (the entry file and everything it
+/// imports), so a caller checking many entry points can skip files an earlier
+/// run already covered.
+fn prepare_program_covering(
+    input_path: &str,
+    covered: &mut HashSet<PathBuf>,
+) -> Result<(tinox_parser::SourceFile, tinox_typecheck::cache::CheckedProgram), Failure> {
     let source =
         build_cache::read_to_string(input_path).map_err(|e| Failure::new("io", Some(input_path), None, format!("Failed to read file: {e}")))?;
 
@@ -5044,6 +5043,7 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir)?;
     resolve_imports(&mut ast, &base_dir, Path::new(input_path), &mut visited, &dep_dirs, &missing_deps)?;
+    covered.extend(visited.iter().cloned());
     // No "Import error:" prefix here: this pass reports more than import
     // problems, and labels the import ones itself (see its own tail).
     check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)?;
@@ -5470,6 +5470,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
 
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
+    codegen.set_local_gc(native_collector()? == Collector::Tinox);
     codegen.set_debug_variables(opt == OptLevel::Debug);
     codegen.set_expr_value_types(checked.expr_types);
     codegen.set_semantic_facts(checked.semantics);
@@ -5700,6 +5701,48 @@ fn verify_ir(ir_path: &str) -> Result<(), Failure> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Collector { Tinox, Boehm, None }
+
+impl Collector {
+    fn links_boehm(self) -> bool {
+        // No-GC diagnostic builds historically also link libgc for explicit
+        // native symbols, even though runtime allocations use libc.
+        self != Self::Tinox
+    }
+}
+
+fn native_collector() -> Result<Collector, String> {
+    let native_supported = cfg!(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"), target_env = "gnu"));
+    let request = std::env::var_os("TINOX_GC");
+    let flags = std::env::var("TINOX_CFLAGS").unwrap_or_default();
+    select_collector(request.as_deref(), native_supported, &flags)
+}
+
+fn select_collector(request: Option<&std::ffi::OsStr>, native_supported: bool, flags: &str) -> Result<Collector, String> {
+    let mut no_gc = false;
+    let mut args = flags.split_whitespace();
+    while let Some(arg) = args.next() {
+        let (define, name) = match arg {
+            "-D" | "-U" => (arg == "-D", args.next().unwrap_or("")),
+            _ if arg.starts_with("-D") || arg.starts_with("-U") => (arg.starts_with("-D"), &arg[2..]),
+            _ => continue,
+        };
+        if name.split('=').next() == Some("TINOX_NO_GC") {
+            no_gc = define;
+        }
+    }
+    let supported = native_supported && !no_gc;
+    match request {
+        Some(v) if v == "tinox" && !supported => Err("TINOX_GC=tinox requires a Linux x86-64 or ARM64 glibc build without TINOX_NO_GC".into()),
+        Some(v) if v != "tinox" && v != "boehm" => Err("TINOX_GC must be boehm or tinox".into()),
+        _ if no_gc => Ok(Collector::None),
+        Some(v) if v == "boehm" => Ok(Collector::Boehm),
+        _ if supported => Ok(Collector::Tinox),
+        _ => Ok(Collector::Boehm),
+    }
+}
+
 struct RuntimeOptions {
     target: tinox_codegen::target::Target,
     source: String,
@@ -5762,7 +5805,11 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     } else {
         None
     };
+    let collector = native_collector()?;
     let mut runtime_flags = vec!["-O3"];
+    if collector == Collector::Tinox {
+        runtime_flags.push("-DTINOX_LOCAL_GC");
+    }
     let pg_include_flag = pg_include_dir.as_ref().map(|d| format!("-I{d}"));
     if db_driver == "postgres" {
         runtime_flags.push("-DTINOX_DB_POSTGRES");
@@ -5781,7 +5828,10 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
         runtime_flags.push("-DTINOX_HTTP3");
     }
     runtime_flags.extend(extra_cflags.iter().map(|s| s.as_str()));
-    let mut link_args = vec!["-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
+    let mut link_args = vec!["-lm", "-lpthread", "-lz", "-no-pie"];
+    if collector.links_boehm() {
+        link_args.push("-lgc");
+    }
     if db_driver == "postgres" {
         link_args.push("-lpq");
     } else if db_driver == "mysql" {
@@ -6022,7 +6072,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.8\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.9\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -6199,25 +6249,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.9\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.9\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.9\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.9.8\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.9\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -6228,7 +6278,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.9.9\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -6238,7 +6288,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.9\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }
@@ -6310,27 +6360,41 @@ mod docker_tests {
     }
 
     #[test]
+    fn gc_selection_respects_target_diagnostics_and_explicit_requests() {
+        let boehm = Some(std::ffi::OsStr::new("boehm"));
+        let tinox = Some(std::ffi::OsStr::new("tinox"));
+        assert_eq!(select_collector(None, true, "").unwrap(), Collector::Tinox);
+        assert_eq!(select_collector(None, false, "").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(boehm, true, "").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(None, true, "-D TINOX_CHECKED=1").unwrap(), Collector::Tinox);
+        assert_eq!(select_collector(None, true, "-DTINOX_NO_GC").unwrap(), Collector::None);
+        assert!(select_collector(tinox, true, "-DTINOX_NO_GC").is_err());
+        assert!(select_collector(tinox, false, "").is_err());
+        assert!(select_collector(Some(std::ffi::OsStr::new("other")), true, "").is_err());
+    }
+
+    #[test]
     fn runtime_packages_baseline_no_tls() {
-        let pkgs = compute_runtime_packages(false, None, &[]);
+        let pkgs = compute_runtime_packages(true, false, None, &[]);
         assert_eq!(pkgs, vec!["libgc1", "zlib1g", "ca-certificates"]);
     }
 
     #[test]
     fn runtime_packages_tls_adds_libssl() {
-        let pkgs = compute_runtime_packages(true, None, &[]);
+        let pkgs = compute_runtime_packages(true, true, None, &[]);
         assert!(pkgs.contains(&"libssl3".to_string()));
     }
 
     #[test]
     fn runtime_packages_db_driver_mapped() {
-        assert!(compute_runtime_packages(false, Some("postgres"), &[]).contains(&"libpq5".to_string()));
-        assert!(compute_runtime_packages(false, Some("mysql"), &[]).contains(&"libmariadb3".to_string()));
-        assert!(compute_runtime_packages(false, Some("sqlite"), &[]).contains(&"libsqlite3-0".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("postgres"), &[]).contains(&"libpq5".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("mysql"), &[]).contains(&"libmariadb3".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("sqlite"), &[]).contains(&"libsqlite3-0".to_string()));
     }
 
     #[test]
     fn runtime_packages_extra_appended_without_duplicates() {
-        let pkgs = compute_runtime_packages(true, None, &["libssl3".to_string(), "libfoo".to_string()]);
+        let pkgs = compute_runtime_packages(true, true, None, &["libssl3".to_string(), "libfoo".to_string()]);
         assert_eq!(pkgs.iter().filter(|p| *p == "libssl3").count(), 1);
         assert!(pkgs.contains(&"libfoo".to_string()));
     }
@@ -6443,7 +6507,7 @@ mod analysis_config_tests {
 
     #[test]
     fn no_section_means_defaults_at_error() {
-        let (l, level) = parse_analysis_config("[package]\ncompiler = \"2.9.8\"\nname = \"x\"\n").unwrap();
+        let (l, level) = parse_analysis_config("[package]\ncompiler = \"2.9.9\"\nname = \"x\"\n").unwrap();
         assert_eq!(l, tinox_typecheck::complexity::Limits::default());
         assert_eq!(level, AnalysisLevel::Error);
     }

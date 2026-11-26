@@ -18,7 +18,7 @@ impl Project {
         let project = Self(root);
         project.write(
             "tinox.toml",
-            "[package]\ncompiler = \"2.9.8\"\nname=\"diagnostics\"\nversion=\"0.1.0\"\nentry=\"Main.tnx\"\n",
+            "[package]\ncompiler = \"2.9.9\"\nname=\"diagnostics\"\nversion=\"0.1.0\"\nentry=\"Main.tnx\"\n",
         );
         project.write(
             "Main.tnx",

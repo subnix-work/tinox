@@ -12,7 +12,7 @@ const C_SRC: &str = r#"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <gc.h>
+#include "runtime.h"
 
 static int64_t counter = 0;
 
@@ -31,7 +31,7 @@ int64_t ffi_strlen(const char* s)     { return (int64_t)strlen(s); }
 const char* ffi_static(void)          { return "static-string"; }
 char* ffi_greet(const char* name) {
     size_t n = strlen(name) + 8;
-    char* out = GC_malloc_atomic(n);
+    char* out = tinox_alloc(n);
     snprintf(out, n, "hello, %s", name);
     return out;
 }
@@ -87,7 +87,7 @@ fn project(name: &str) -> PathBuf {
     std::fs::write(
         d.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.8\"\nname = \"ffi_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\n",
+            "[package]\ncompiler = \"2.9.9\"\nname = \"ffi_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\n",
             env!("CARGO_PKG_VERSION")
         ),
     )

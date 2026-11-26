@@ -18,7 +18,8 @@ fn concurrent_first_access_publishes_one_initialized_dependency_graph() {
     fs::write(directory.join("Eager.tnx"), "import Leaf\n@Startup class Eager { @Inject var leaf: Leaf\nvar ready: Int64 = 29 }").unwrap();
     let fields: String = (0..2000).map(|i| format!("var field{i}: Int64 = 17\n")).collect();
     fs::write(directory.join("Service.tnx"), format!("import Leaf\n@ApplicationComponent class Service {{ {fields} @Inject var leaf: Leaf }}")).unwrap();
-    success(Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&directory).args(["build", "Main.tnx", "-o", "program"]));
+    // The native clients below use Boehm directly and relink the emitted IR.
+    success(Command::new(env!("CARGO_BIN_EXE_tinox")).env("TINOX_GC", "boehm").current_dir(&directory).args(["build", "Main.tnx", "-o", "program"]));
     let ir = fs::read_to_string(directory.join("program.ll")).unwrap();
     assert!(ir.contains("define i32 @tinox_main("));
     // Keep the real generated providers and startup constructors, but substitute
@@ -95,7 +96,7 @@ fn concurrent_http_clients_share_a_guarded_counter_and_collection() {
     let directory = std::env::temp_dir().join(format!("tinox-shared-http-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext");
-    let mut manifest = "[package]\ncompiler = \"2.9.8\"\nname=\"shared_http\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.9.9\"\nname=\"shared_http\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(&modules.join(module).join("tinox"), &directory.join(format!(".tinox/repository/central/tinox.core/{module}/9.9.9/tinox")));

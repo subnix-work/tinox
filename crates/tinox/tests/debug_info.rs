@@ -148,7 +148,9 @@ fn locals_follow_lexical_blocks_and_declaration_order() {
     let (d, exe) = build_debug("scopes", &[("Main.tnx", SCOPES_MAIN)]);
     let out = gdb(&d, &exe, &["break Main.tnx:8", "break Main.tnx:10", "break Main.tnx:14", "break Main.tnx:18", "run", "info locals", "c", "info locals", "c", "info locals", "c", "info locals"]);
     assert!(!out.contains("locations)"), "each line resolves to one location: {out}");
-    let sections: Vec<&str> = out.split("hit Breakpoint").collect();
+    // gdb prints "Thread 1 \"x\" hit Breakpoint N, ..." for multi-threaded programs and plain
+    // "Breakpoint N, ..." for single-threaded ones (the Tinox GC starts no helper thread).
+    let sections: Vec<&str> = out.split("Breakpoint ").collect();
     let at = |line: &str| sections.iter().find(|s| s.contains(&format!("Main.tnx:{}\n", line.trim()))).copied().unwrap_or_else(|| panic!("no stop at line {line}: {out}"));
     // before `var t` is declared only `outer` exists
     let s8 = at("8");

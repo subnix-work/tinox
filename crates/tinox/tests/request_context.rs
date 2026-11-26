@@ -33,7 +33,7 @@ fn requests_share_one_graph_and_release_it_after_success_error_and_binding_failu
     let directory = std::env::temp_dir().join(format!("tinox-request-http-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext");
-    let mut manifest = "[package]\ncompiler = \"2.9.8\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.9.9\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(
@@ -175,6 +175,7 @@ import Layer
         Command::new(env!("CARGO_BIN_EXE_tinox"))
             .current_dir(&directory)
             .env("TINOX_HOME", &directory)
+            .env("TINOX_GC", "boehm") // relinked below against the standalone Boehm runtime
             .args(["build", "Main.tnx", "-o", "unmanaged"]),
     );
     let ir = fs::read_to_string(directory.join("unmanaged.ll")).unwrap();
@@ -356,6 +357,7 @@ fn native_threads_isolate_graphs_and_context_end_drops_the_cache() {
     success(
         Command::new(env!("CARGO_BIN_EXE_tinox"))
             .current_dir(&directory)
+            .env("TINOX_GC", "boehm") // relinked below against the standalone Boehm runtime
             .args(["build", "Main.tnx", "-o", "program"]),
     );
     let ir = fs::read_to_string(directory.join("program.ll")).unwrap();

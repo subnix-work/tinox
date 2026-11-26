@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "compress"
-version = "1.1.9"
+version = "1.1.10"
 description = "tinox.core.compress, split out of the bundled stdlib as a standalone tinox-central package."

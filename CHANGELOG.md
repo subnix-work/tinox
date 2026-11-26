@@ -4,6 +4,28 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.9] - 2026-11-26
+
+**Notable change:** native builds now use the Tinox garbage collector by default instead of Boehm (#712). Every package is republished for compiler 2.9.9 (patch version bump; a package declaring `compiler = "2.9.8"` is rejected by 2.9.9). **Existing projects need attention only if** native C code linked through `[native]` uses Boehm's `GC_*` API directly: build it with `TINOX_GC=boehm`, or allocate through `tinox_alloc` from `runtime.h`.
+
+### Added
+
+- Tinox garbage collector (#712): a non-moving, conservative collector with typed slabs, ordered and scattered marking and whole-slab sweeping. It is the default for debug and release builds on Linux x86-64 **and ARM64** with glibc, and also for the REPL, `--checked` builds and `tinox docker --source-build` (which no longer forces Boehm and only installs `libgc1` when Boehm is requested). `TINOX_GC=boehm tinox build` selects Boehm; `TINOX_NO_GC` keeps its own collector-free allocator for sanitizer runs, and an explicit `TINOX_GC=tinox` there is an error. Contract and measurements: `benchmarks/local_gc/README.md`.
+
+### Changed
+
+- The FFI string contract now points at `tinox_alloc` (`runtime.h`) for strings returned from C; `GC_malloc_atomic`/`GC_strdup` are Boehm-only.
+
+### Fixed
+
+- Eager components allocated before the Tinox collector registered the main thread (#714, Bug 486).
+- The REPL rejected every multi-line or `var`/`let`/`println` entry because it appended `;` to each line, which has been a parse error since newline-terminated statements (#716, Bug 487). A `;` typed by the user is now reported by the parser.
+- `tinox check` skips files already covered by an earlier entry's program (#705).
+
+### Internal
+
+- `make test` builds the integration tests with a non-LTO `ci` profile; release builds are unchanged. The pre-push hook no longer runs `make check` for branch deletions. The `debug_info` gdb test accepts both gdb breakpoint output formats.
+
 ## [2.9.8] - 2026-11-21
 
 **Notable change:** every package is republished for compiler 2.9.8 (patch version bump; a package declaring `compiler = "2.9.7"` is rejected by 2.9.8). **Existing projects need attention:** complexity limits are now enforced by default (see Added), so a project with very long or deeply nested functions fails to build until it is split up, annotated with `@AllowComplexity`, or set to `level = "warn"`.
