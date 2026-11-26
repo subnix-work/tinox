@@ -1711,10 +1711,16 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
 
 #[cfg(test)]
 mod repl_semantics_tests {
+    /// The REPL writes `/tmp/.tinox_repl_<turn>.*`. Each test runs in its own process and
+    /// process ids are often consecutive, so `pid + k` collides; `pid * 4 + k` (k < 4) cannot.
+    fn repl_test_turn(k: usize) -> usize {
+        std::process::id() as usize * 4 + k
+    }
+
     #[test]
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
         let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
-        let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
+        let output = super::repl_compile_and_run(source, repl_test_turn(0)).unwrap();
         assert_eq!(output.trim(), "0\n1.5");
     }
 
@@ -1723,14 +1729,14 @@ mod repl_semantics_tests {
         let entry = "var x: Int64 = 41\nprintln((x + 1).toString())";
         let source = super::repl_statement_source("", entry, 0);
         assert!(!source.contains(';'), "{source}");
-        let output = super::repl_compile_and_run(&source, std::process::id() as usize + 1).unwrap();
+        let output = super::repl_compile_and_run(&source, repl_test_turn(1)).unwrap();
         assert_eq!(output.trim(), "42");
     }
 
     #[test]
     fn a_typed_semicolon_is_reported_not_silently_accepted() {
         let source = super::repl_statement_source("", "var x: Int64 = 1;\nprintln(x.toString())", 0);
-        let err = super::repl_compile_and_run(&source, std::process::id() as usize + 2).unwrap_err();
+        let err = super::repl_compile_and_run(&source, repl_test_turn(2)).unwrap_err();
         assert!(err.contains("semicolons were removed"), "{err}");
     }
 }
