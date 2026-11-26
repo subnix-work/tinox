@@ -806,7 +806,7 @@
       <div class="card">
         <div class="icon">♻️</div>
         <h4>Garbage Collection</h4>
-        <p>Native Linux x86-64 glibc builds use the Tinox garbage collector. Build with <code>TINOX_GC=boehm</code> to select Boehm.</p>
+        <p>Native Linux x86-64 and ARM64 glibc builds use the Tinox garbage collector. Build with <code>TINOX_GC=boehm</code> to select Boehm.</p>
       </div>
       <div class="card">
         <div class="icon">🧵</div>
@@ -1009,8 +1009,8 @@
 
     <h3>Memory Management</h3>
     <p>
-      Native Linux x86-64 glibc builds use the Tinox garbage collector. Build with <code>TINOX_GC=boehm</code> to select Boehm.
-      Both collectors trace references and reclaim unreachable objects. Native ARM64 builds and the REPL use Boehm.
+      Native Linux x86-64 and ARM64 glibc builds use the Tinox garbage collector. Build with <code>TINOX_GC=boehm</code> to select Boehm.
+      Both collectors trace references and reclaim unreachable objects. This also covers the REPL, <code>--checked</code> and <code>tinox docker --source-build</code>.
     </p>
     <p>
       For frequent operations (sort, JSON parsing),

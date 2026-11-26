@@ -807,7 +807,7 @@
       <div class="card">
         <div class="icon">♻️</div>
         <h4>Garbage Collection</h4>
-        <p>Native Builds auf Linux x86-64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.</p>
+        <p>Native Builds auf Linux x86-64 und ARM64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.</p>
       </div>
       <div class="card">
         <div class="icon">🧵</div>
@@ -1011,8 +1011,8 @@
 
     <h3>Speicherverwaltung</h3>
     <p>
-      Native Builds auf Linux x86-64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.
-      Beide Collectoren verfolgen Referenzen und geben unerreichbare Objekte frei. Native ARM64-Builds und die REPL verwenden Boehm.
+      Native Builds auf Linux x86-64 und ARM64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.
+      Beide Collectoren verfolgen Referenzen und geben unerreichbare Objekte frei. Das gilt auch für REPL, <code>--checked</code> und <code>tinox docker --source-build</code>.
     </p>
     <p>
       Für häufige Operationen (Sort, JSON-Parsing) werden

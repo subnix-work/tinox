@@ -101,6 +101,9 @@ pub struct SourceBuildSpec<'a> {
     pub tls: bool,
     pub http3: bool,
     pub has_dependencies: bool,
+    /// Build with Boehm inside the builder (`TINOX_GC=boehm`); otherwise the
+    /// builder's compiler picks its default collector (Tinox GC).
+    pub boehm: bool,
     pub labels: &'a [(String, String)],
 }
 
@@ -113,7 +116,8 @@ pub struct SourceBuildSpec<'a> {
 pub fn generate_source_build_dockerfile(spec: &SourceBuildSpec) -> String {
     let mut s = String::new();
     s.push_str(&format!("FROM {} AS build\n", spec.builder));
-    s.push_str(&format!("ENV TINOX_TLS={} TINOX_HTTP3={} TINOX_GC=boehm\n", u8::from(spec.tls), u8::from(spec.http3)));
+    let gc = if spec.boehm { " TINOX_GC=boehm" } else { "" };
+    s.push_str(&format!("ENV TINOX_TLS={} TINOX_HTTP3={}{gc}\n", u8::from(spec.tls), u8::from(spec.http3)));
     s.push_str("WORKDIR /src\n");
     s.push_str("COPY project/ /src/\n");
     // `tinox install` verifies every dependency against tinox.lock when one
@@ -281,10 +285,11 @@ mod tests {
             tls: true,
             http3: false,
             has_dependencies: true,
+            boehm: false,
             labels: &labels,
         });
         assert!(out.starts_with("FROM ghcr.io/x/tinox-builder@sha256:abc AS build\n"));
-        assert!(out.contains("ENV TINOX_TLS=1 TINOX_HTTP3=0 TINOX_GC=boehm\n"));
+        assert!(out.contains("ENV TINOX_TLS=1 TINOX_HTTP3=0\n"));
         assert!(out.contains("COPY project/ /src/"));
         assert!(out.contains("RUN mkdir -p /out && tinox install && tinox build --release -o /out/app"));
         assert!(out.contains("COPY --from=build /out/app /app/app"));
@@ -299,7 +304,7 @@ mod tests {
     fn source_build_without_deps_skips_install() {
         let out = generate_source_build_dockerfile(&SourceBuildSpec {
             builder: "b", base: "r", packages: &[], binary_name: "app", ports: &[], uid: 1,
-            tls: false, http3: false, has_dependencies: false, labels: &[],
+            tls: false, http3: false, has_dependencies: false, boehm: false, labels: &[],
         });
         assert!(!out.contains("tinox install"));
         assert!(out.contains("ENV TINOX_TLS=0"));

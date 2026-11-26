@@ -1064,16 +1064,16 @@ tinox/
 
 ## Garbage Collection
 
-Native debug and release builds on Linux x86-64 with glibc use the Tinox
+Native debug and release builds on Linux x86-64 and ARM64 with glibc use the Tinox
 garbage collector by default. To build the same program with Boehm, run
 `TINOX_GC=boehm tinox build`. The choice is made at build time. Rebuild
 the executable to switch back. Both collectors support
 `Debug::gcCollect()` and `Debug::memoryUsage()`.
 
-Native ARM64 builds, the REPL, checked builds and the pinned Docker
-source builder use Boehm. The no-GC sanitizer configuration uses its own
-allocator. An explicit `TINOX_GC=tinox` request on an unsupported build
-reports an error. Native libraries that use Boehm's API directly require
+Every build path uses the Tinox GC by default: `tinox build`/`run`, the REPL, checked
+builds (`--checked`) and the pinned Docker source builder. Only the no-GC sanitizer
+configuration (`TINOX_NO_GC`) uses its own allocator, because it deliberately has no collector. An explicit `TINOX_GC=tinox` request on an unsupported
+platform or with `TINOX_NO_GC` reports an error. Native libraries that use Boehm's API directly require
 the Boehm build. See the [collector contract and measurements](benchmarks/local_gc/README.md)
 for native thread registration, signal use and heap counters.
 

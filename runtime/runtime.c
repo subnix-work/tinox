@@ -55,8 +55,16 @@
 #if defined(TINOX_LOCAL_GC)
 // Experimental conservative, non-moving collector. Keep it with runtime.c:
 // installed compilers distribute that file as a standalone runtime source.
-#if !defined(__x86_64__) || !defined(__GLIBC__) || defined(TINOX_NO_GC) || defined(TINOX_CHECKED)
-#error "TINOX_GC=tinox requires Linux x86-64 glibc and the normal (unchecked, GC-enabled) runtime"
+#if !(defined(__x86_64__) || defined(__aarch64__)) || !defined(__GLIBC__) || defined(TINOX_NO_GC)
+#error "TINOX_GC=tinox requires Linux x86-64 or ARM64 glibc and a GC-enabled runtime (not TINOX_NO_GC)"
+#endif
+// Current stack pointer. Registers are captured separately (getcontext for the
+// collecting thread, the kernel signal frame for parked ones), so only the
+// stack bound is needed here.
+#if defined(__x86_64__)
+#define LOCAL_READ_SP(out) __asm__ volatile("mov %%rsp,%0" : "=r"(out))
+#else
+#define LOCAL_READ_SP(out) __asm__ volatile("mov %0, sp" : "=r"(out))
 #endif
 #include <link.h>
 #include <linux/futex.h>
@@ -124,7 +132,7 @@ static void local_suspend(int sig) {
     if (t && atomic_load(&t->state) == REQUESTED) {
         // The kernel signal frame above this stack pointer contains the
         // interrupted register file, including SIMD state and the red zone.
-        __asm__ volatile("mov %%rsp,%0" : "=r"(t->stopped_sp));
+        LOCAL_READ_SP(t->stopped_sp);
         atomic_store(&t->state, STOPPED);
         local_wake(&t->state);
         while (atomic_load(&t->state) == STOPPED)
@@ -566,7 +574,7 @@ static __attribute__((noinline)) void local_collect_locked(void) {
     ucontext_t registers;
     if (getcontext(&registers)) local_fatal("tinox GC: cannot capture registers\n");
     uintptr_t own_sp;
-    __asm__ volatile("mov %%rsp,%0" : "=r"(own_sp));
+    LOCAL_READ_SP(own_sp);
     local_collect_from(own_sp, &registers);
 }
 static void local_lock_heap(void) {
