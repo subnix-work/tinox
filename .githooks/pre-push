@@ -3,5 +3,21 @@
 # Install with: make install-hooks    Bypass (emergency): git push --no-verify
 set -e
 cd "$(git rev-parse --show-toplevel)"
+# git feeds "<local ref> <local sha> <remote ref> <remote sha>" per ref on stdin. A push that
+# only deletes remote refs (local sha all zeros) has nothing to test, so skip the gate.
+zero=0000000000000000000000000000000000000000
+only_deletes=1
+seen=0
+while read -r _ local_sha _ _; do
+    seen=1
+    case "$local_sha" in
+        "$zero"*) ;;
+        *) only_deletes=0 ;;
+    esac
+done
+if [ "$seen" = 1 ] && [ "$only_deletes" = 1 ]; then
+    echo "pre-push: branch deletion only, skipping make check"
+    exit 0
+fi
 echo "pre-push: running make check (bypass: git push --no-verify) …"
 make check
