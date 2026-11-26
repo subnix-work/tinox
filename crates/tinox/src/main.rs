@@ -1297,6 +1297,7 @@ fn stage_source_build(
         tls,
         http3,
         has_dependencies,
+        boehm: native_collector().unwrap_or(Collector::Boehm).links_boehm(),
         labels: &labels,
     });
     let dockerfile_path = ctx_dir.join("Dockerfile");
@@ -1354,10 +1355,6 @@ fn docker_build(args: &[String]) {
     let opt = if debug { OptLevel::Debug } else { OptLevel::Release };
     let tag_override = parse_flag_value(args, "--tag");
     let source_build = args.iter().any(|a| a == "--source-build");
-    if source_build && std::env::var_os("TINOX_GC").is_some_and(|v| v != "boehm") {
-        eprintln!("error: --source-build only supports Boehm in the pinned builder image; use the host build for TINOX_GC=tinox");
-        std::process::exit(1);
-    }
 
     // Project mode only -- the [docker] section this command reads only
     // exists in a tinox.toml, so (unlike `build`/`run`) there's no bare-file
@@ -1392,7 +1389,7 @@ fn docker_build(args: &[String]) {
     if uid == 0 {
         eprintln!("warning: [docker] uid = 0 -- the container process will run as root");
     }
-    let boehm = source_build || native_collector().unwrap_or_else(|err| {
+    let boehm = native_collector().unwrap_or_else(|err| {
         eprintln!("error: {err}");
         std::process::exit(1);
     }).links_boehm();
@@ -1729,9 +1726,6 @@ mod repl_semantics_tests {
 }
 
 fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
-    if std::env::var_os("TINOX_GC").is_some_and(|v| v != "boehm") {
-        return Err("the REPL supports only TINOX_GC=boehm; use tinox build or run for the Tinox collector".into());
-    }
     // Lex + parse + check + lower through the same semantic boundary as builds.
     let tokens = Lexer::new(src).tokenize()
         .map_err(|errs| errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
@@ -1747,6 +1741,7 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     cg.set_semantic_facts(checker.semantic_facts());
     let (interfaces, implementations) = checker.interface_info();
     cg.set_interface_info(interfaces, implementations);
+    cg.set_local_gc(native_collector()? == Collector::Tinox);
     cg.gen(&ast).map_err(|e| format!("{:?}", e))?;
     let ir = cg.into_ir();
 
@@ -1756,22 +1751,12 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     fs::write(&ir_path, &ir)
         .map_err(|e| format!("write IR: {}", e))?;
 
-    let runtime_obj = find_runtime_object();
-
-    // Compile to executable
+    // Same toolchain path as `tinox build`, so the REPL links whichever collector the
+    // build would (Tinox GC by default) and shares the runtime flags and cache.
     let exe = format!("{}.out", tmp_base);
-    let mut cmd = Command::new("clang");
-    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm").arg("-lgc").arg("-lz");
-    if let Some(ref rt) = runtime_obj {
-        cmd.arg(rt);
-    }
-
-    let out = cmd.output()
-        .map_err(|e| format!("clang: {}", e))?;
-    if !out.status.success() {
+    if let Err(failure) = compile_ll_to_exe(&ir_path, &exe, OptLevel::Debug) {
         let _ = fs::remove_file(&ir_path);
-        return Err(String::from_utf8_lossy(&out.stderr)
-            .lines().take(3).collect::<Vec<_>>().join("; "));
+        return Err(format!("{failure}").lines().take(3).collect::<Vec<_>>().join("; "));
     }
 
     // Run
@@ -1786,42 +1771,6 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&run_out.stdout).to_string())
-}
-
-fn find_runtime_object() -> Option<String> {
-    // Try common locations for the precompiled runtime.o
-    let candidates = [
-        "runtime/runtime.o",
-        "../runtime/runtime.o",
-        "runtime.o",
-    ];
-    for c in &candidates {
-        if Path::new(c).exists() { return Some(c.to_string()); }
-    }
-    // If runtime.c exists but not runtime.o, compile it on the fly
-    let c_candidates = [
-        "runtime/runtime.c",
-        "../runtime/runtime.c",
-        "runtime.c",
-    ];
-    for c in &c_candidates {
-        if Path::new(c).exists() {
-            let obj = "/tmp/.tinox_runtime.o";
-            let status = Command::new("clang")
-                .args(["-c", c, "-o", obj, "-O3"])
-                .status().ok()?;
-            if status.success() { return Some(obj.to_string()); }
-        }
-    }
-    // Same dev/system resolution used by the main build path (compile_ll_to_exe).
-    if let Some(c) = runtime_c_path() {
-        let obj = "/tmp/.tinox_runtime.o";
-        let status = Command::new("clang")
-            .args(["-c", &c.to_string_lossy(), "-o", obj, "-O3"])
-            .status().ok()?;
-        if status.success() { return Some(obj.to_string()); }
-    }
-    None
 }
 
 /// Declarative schema changelog commands (issue #410).
@@ -5748,7 +5697,7 @@ impl Collector {
 }
 
 fn native_collector() -> Result<Collector, String> {
-    let native_supported = cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"));
+    let native_supported = cfg!(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"), target_env = "gnu"));
     let request = std::env::var_os("TINOX_GC");
     let flags = std::env::var("TINOX_CFLAGS").unwrap_or_default();
     select_collector(request.as_deref(), native_supported, &flags)
@@ -5756,7 +5705,6 @@ fn native_collector() -> Result<Collector, String> {
 
 fn select_collector(request: Option<&std::ffi::OsStr>, native_supported: bool, flags: &str) -> Result<Collector, String> {
     let mut no_gc = false;
-    let mut checked = false;
     let mut args = flags.split_whitespace();
     while let Some(arg) = args.next() {
         let (define, name) = match arg {
@@ -5764,15 +5712,13 @@ fn select_collector(request: Option<&std::ffi::OsStr>, native_supported: bool, f
             _ if arg.starts_with("-D") || arg.starts_with("-U") => (arg.starts_with("-D"), &arg[2..]),
             _ => continue,
         };
-        match name.split('=').next() {
-            Some("TINOX_NO_GC") => no_gc = define,
-            Some("TINOX_CHECKED") => checked = define,
-            _ => {}
+        if name.split('=').next() == Some("TINOX_NO_GC") {
+            no_gc = define;
         }
     }
-    let supported = native_supported && !checked && !no_gc;
+    let supported = native_supported && !no_gc;
     match request {
-        Some(v) if v == "tinox" && !supported => Err("TINOX_GC=tinox requires a normal Linux x86-64 glibc build without TINOX_CHECKED or TINOX_NO_GC".into()),
+        Some(v) if v == "tinox" && !supported => Err("TINOX_GC=tinox requires a Linux x86-64 or ARM64 glibc build without TINOX_NO_GC".into()),
         Some(v) if v != "tinox" && v != "boehm" => Err("TINOX_GC must be boehm or tinox".into()),
         _ if no_gc => Ok(Collector::None),
         Some(v) if v == "boehm" => Ok(Collector::Boehm),
@@ -6404,9 +6350,9 @@ mod docker_tests {
         assert_eq!(select_collector(None, true, "").unwrap(), Collector::Tinox);
         assert_eq!(select_collector(None, false, "").unwrap(), Collector::Boehm);
         assert_eq!(select_collector(boehm, true, "").unwrap(), Collector::Boehm);
-        assert_eq!(select_collector(None, true, "-D TINOX_CHECKED=1").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(None, true, "-D TINOX_CHECKED=1").unwrap(), Collector::Tinox);
         assert_eq!(select_collector(None, true, "-DTINOX_NO_GC").unwrap(), Collector::None);
-        assert!(select_collector(tinox, true, "-DTINOX_CHECKED").is_err());
+        assert!(select_collector(tinox, true, "-DTINOX_NO_GC").is_err());
         assert!(select_collector(tinox, false, "").is_err());
         assert!(select_collector(Some(std::ffi::OsStr::new("other")), true, "").is_err());
     }

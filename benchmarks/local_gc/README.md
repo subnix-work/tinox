@@ -1,6 +1,6 @@
 # Tinox garbage collector (#712)
 
-Native builds use the Tinox collector by default on Linux/x86-64 with glibc.
+Native builds use the Tinox collector by default on Linux x86-64 and ARM64 with glibc.
 To verify the default, run from a checkout with the native Tinox toolchain:
 
 ```sh
@@ -11,13 +11,12 @@ ldd /tmp/gc-demo
 ```
 
 The selector applies at compile time. Rebuild with `TINOX_GC=boehm tinox build`
-to switch to Boehm. Native ARM64 and checked builds default to Boehm.
-The Tinox-GC executable uses libc for block storage and has no dependency
+to switch to Boehm. The Tinox-GC executable uses libc for block storage and has no dependency
 on libgc. The runtime flags and link inputs participate in the build cache.
-The REPL and pinned Docker source builder support Boehm. Tinox GC requires
-the normal runtime build (debug or release). Checked mode keeps a separate
-registry of object addresses, and the no-GC sanitizer mode uses a different
-allocator; an explicit Tinox-GC request is rejected in either mode.
+The REPL, checked builds (the registry of object addresses is a side table that does not
+depend on the allocator) and the pinned Docker source builder use the Tinox GC too. Only the
+no-GC sanitizer mode (`TINOX_NO_GC`) has no collector by design; an explicit Tinox-GC
+request is rejected there.
 
 ## Heap and roots
 

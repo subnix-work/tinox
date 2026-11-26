@@ -15,7 +15,7 @@ Found by reading `runtime/runtime.c`, `runtime/runtime.h` and `crates/tinox-code
 | Plain `char` signedness | not assumed | plain `char` is unsigned on aarch64 and signed on x86-64; no `char`-sign dependent comparison compiles to a different result (checked with `-Wtype-limits` / `-Wtautological-*` under `-funsigned-char`) |
 | `long double` (JSON range validation) | differs | 80-bit x87 on x86-64, IEEE binary128 (software) on aarch64; used only for comparing numbers, results are the same for any `int64`/`double` input |
 | `__int128` (file mtime in nanoseconds) | none | supported by clang on both |
-| Boehm GC stop-the-world (`SIGPWR`, thread suspend) and `pthread` roots | yes, by nature | thread-root registration and signal-based suspend are per architecture; covered by the GC stress, foreign-thread and task tests |
+| GC stop-the-world (Boehm `SIGPWR`, Tinox GC `SIGUSR2` thread suspend) and `pthread` roots | yes, by nature | thread-root registration and signal-based suspend are per architecture; covered by the GC stress, foreign-thread and task tests |
 | LLVM data layout / triple | per target | `crates/tinox-codegen/src/target.rs`; native-only |
 | Varargs / struct passing in generated calls and FFI (`extern fn`) | per ABI | AAPCS64 differs from SysV: covered by the FFI and native-link tests |
 | Native libraries (libpq, libsqlite3, libmariadb, OpenSSL, zlib, ngtcp2/nghttp3) | package availability | HTTP/3 needs ngtcp2/nghttp3, not provisioned in the Debian builder (see `docs/docker.md`) |

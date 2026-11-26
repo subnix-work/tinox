@@ -1,5 +1,5 @@
 //! Exercise the normal build selector and the emitted executable (#712).
-#![cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"), target_env = "gnu"))]
 
 use std::{path::Path, process::Command};
 
