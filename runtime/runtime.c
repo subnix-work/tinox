@@ -309,7 +309,7 @@ static void span_drop(LocalSpan* s, unsigned i) {
     if (s->used-- == s->capacity) span_offer(s);
 }
 static void span_release(LocalSpan* s) {
-    span_withdraw(s);
+    if (s->avail_link) span_withdraw(s);
     LocalSpan** link = &span_index[span_hash(s->base)];
     while (*link != s)
         link = &(*link)->hash_next;
@@ -317,6 +317,38 @@ static void span_release(LocalSpan* s) {
     free((void*)s->base);
     free(s);
 }
+// Classify packed metadata first. An entirely live slab only needs its marks
+// cleared. An entirely dead one can be released without writing a free list
+// through every payload immediately before returning that memory to libc.
+static void span_sweep(LocalSpan* s) {
+    unsigned dead_count = 0, dead_bytes = 0;
+    for (unsigned i = 0; i < s->cursor; i++) {
+        unsigned n = s->sizes[i];
+        if (!(n & SLOT_MARK)) {
+            dead_count += n != 0;
+            dead_bytes += n;
+        }
+    }
+    if (!dead_count) {
+        for (unsigned i = 0; i < s->cursor; i++) s->sizes[i] &= ~SLOT_MARK;
+        return;
+    }
+    local_swept += dead_bytes;
+    if (dead_count == s->used) {
+        local_bytes -= dead_bytes;
+        local_count -= dead_count;
+        if (s->trace) traceable_count -= dead_count;
+        span_release(s);
+        return;
+    }
+    for (unsigned i = 0; i < s->cursor; i++) {
+        if (s->sizes[i] & SLOT_MARK)
+            s->sizes[i] &= ~SLOT_MARK;
+        else if (s->sizes[i])
+            span_drop(s, i);
+    }
+}
+
 typedef struct {
     uintptr_t base;
     size_t size;
@@ -512,15 +544,7 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     for (unsigned h = 0; h < SPAN_BUCKETS; h++) {
         for (LocalSpan *s = span_index[h], *next; s; s = next) {
             next = s->hash_next;
-            for (unsigned i = 0; i < s->cursor; i++) {
-                if (s->sizes[i] & SLOT_MARK)
-                    s->sizes[i] &= ~SLOT_MARK;
-                else if (s->sizes[i]) {
-                    local_swept += s->sizes[i];
-                    span_drop(s, i);
-                }
-            }
-            if (!s->used) span_release(s);
+            span_sweep(s);
         }
     }
     for (LocalBlock *b = local_blocks, *next; b; b = next) {
@@ -14895,11 +14919,23 @@ typedef struct {
     size_t len;
     size_t cap;
     int    first;
+#ifdef TINOX_LOCAL_GC
+    bool   on_stack;
+#endif
 } JsonBuilder;
 
 static void jb_grow(JsonBuilder* b, size_t need) {
     if (b->len + need <= b->cap) return;
     while (b->cap < b->len + need) b->cap *= 2;
+#ifdef TINOX_LOCAL_GC
+    if (b->on_stack) {
+        char* output = TINOX_TEXT_ALLOC(b->cap);
+        memcpy(output, b->buf, b->len);
+        b->buf = output;
+        b->on_stack = false;
+        return;
+    }
+#endif
     b->buf = (char*)realloc(b->buf, b->cap);
 }
 
@@ -14916,6 +14952,9 @@ static void jb_key(JsonBuilder* b, const char* key) {
 
 char* jsonBuilderCreate(void) {
     JsonBuilder* b = (JsonBuilder*)malloc(sizeof(JsonBuilder));
+#ifdef TINOX_LOCAL_GC
+    b->on_stack = false;
+#endif
     b->cap = 256;
     b->buf = (char*)TINOX_TEXT_ALLOC(b->cap);
     b->len = 0;
@@ -14982,12 +15021,30 @@ void jsonBuilderAddIntList(char* handle, const char* key, int64_t* h) {
     b->buf[b->len++] = ']';
 }
 
-char* jsonBuilderFinish(char* handle) {
-    JsonBuilder* b = (JsonBuilder*)handle;
+static char* jb_finish(JsonBuilder* b) {
     jb_grow(b, 2);
     b->buf[b->len++] = '}';
     b->buf[b->len] = '\0';
-    char* result = b->buf;
+    return b->buf;
+}
+
+#ifdef TINOX_LOCAL_GC
+// The generated writer borrows the builder for this call. Nested serializers
+// get their own frame. Only the returned text outlives the temporary builder.
+char* tinox_json_render(int64_t* object, void (*write_fields)(int64_t*, char*)) {
+    char scratch[128] = "{";
+    JsonBuilder builder = {.buf = scratch, .len = 1, .cap = sizeof(scratch), .first = 1, .on_stack = true};
+    write_fields(object, (char*)&builder);
+    char* result = jb_finish(&builder);
+    if (builder.on_stack)
+        return memcpy(TINOX_TEXT_ALLOC(builder.len + 1), result, builder.len + 1);
+    return result;
+}
+#endif
+
+char* jsonBuilderFinish(char* handle) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    char* result = jb_finish(b);
     free(b); // free the builder header only; result owns the buffer
     return result;
 }

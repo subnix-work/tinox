@@ -9,6 +9,8 @@
 #include "runtime.h"
 
 extern void gcCollect(void);
+extern char* tinox_json_render(int64_t* object, void (*write_fields)(int64_t*, char*));
+extern void jsonBuilderAddRaw(char* handle, const char* key, const char* raw);
 extern void* tinox_alloc_typed(size_t bytes, uint64_t trace);
 extern int64_t gcStat(int64_t kind);
 extern size_t tinox_gc_swept_bytes(void);
@@ -48,6 +50,12 @@ static void* worker(void* unused) {
     void** b = tinox_alloc(128 * 1024);
     *a = b;
     *b = a;
+    // Fill multiple slabs with traceable objects reachable only from the cycle.
+    for (unsigned i = 0; i < 256; i++) {
+        void** node = tinox_alloc_typed(512, 1);
+        *node = a[1];
+        a[1] = node;
+    }
     tinox_thread_detach();
     tinox_thread_detach();
     return NULL;
@@ -119,7 +127,35 @@ static void exercise_atomic_runs(void) {
     tinox_free(roots);
 }
 
+// Collect while the serializer frame holds its only reference to spilled
+// storage, and again after the completed string has escaped the frame.
+static void write_json_field(int64_t* length, char* builder) {
+    char value[1027];
+    value[0] = '"';
+    memset(value + 1, 'x', *length);
+    value[*length + 1] = '"';
+    value[*length + 2] = 0;
+    jsonBuilderAddRaw(builder, "v", value);
+    gcCollect();
+}
+
+static void exercise_json_frames(void) {
+    int64_t lengths[] = {0, 118, 119, 120, 121, 256, 1024};
+    char* results[sizeof(lengths) / sizeof(*lengths)];
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(*lengths); i++)
+        results[i] = tinox_json_render(&lengths[i], write_json_field);
+    gcCollect();
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(*lengths); i++) {
+        const char* value = results[i];
+        if (strncmp(value, "{\"v\":\"", 6) ||
+            strspn(value + 6, "x") != (size_t)lengths[i] ||
+            strcmp(value + 6 + lengths[i], "\"}")) abort();
+        tinox_free(results[i]);
+    }
+}
+
 int64_t native_roots(void) {
+    exercise_json_frames();
     gcCollect();
     if (*startup_root != 712) abort();
     exercise_atomic_runs();
@@ -138,9 +174,11 @@ int64_t native_roots(void) {
     transfer(release_worker[1], 1);
     if (pthread_join(tid, NULL)) abort();
     size_t before = tinox_gc_swept_bytes();
+    int64_t heap_before = gcStat(0);
     gcCollect(); // no thread-local or stack ranges from the exited worker
     close(ready[0]); close(ready[1]); close(release_worker[0]); close(release_worker[1]);
-    return tinox_gc_swept_bytes() - before >= 256 * 1024;
+    size_t swept = tinox_gc_swept_bytes() - before;
+    return swept >= 384 * 1024 && gcStat(0) == heap_before - (int64_t)swept;
 }
 
 // Int64 is a documented FFI handle representation. Keep the only reference

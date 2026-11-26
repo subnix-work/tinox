@@ -159,7 +159,7 @@ collections faster than Boehm and the 500k collection more slowly. HTTP p99
 ranges overlap. These workloads do not establish performance for long-lived
 heterogeneous heaps, sustained overload or larger worker counts.
 
-## Marking ordered and shuffled references
+## Marking ordered and shuffled references at d9cd6ef3
 
 Profiling the first slab version (8c1afcd5) at 500k entries attributed about
 1.39 ms to marking and 0.20 ms to sweeping. The next version stores slot
@@ -177,7 +177,7 @@ appending new objects. The shuffled case visits the same objects in a different
 order. Values are process medians. Each pause sample averages ten full
 collections. [Raw samples and hashes](locality-results.json.gz)
 
-| Workload | Previous Tinox (8c1afcd5) | Current Tinox | Boehm |
+| Workload | Previous Tinox (8c1afcd5) | Tinox at d9cd6ef3 | Boehm |
 | --- | ---: | ---: | ---: |
 | Ordered 10k, µs | 45.5 | 26.5 | 128 |
 | Ordered 50k, µs | 164.5 | 65 | 237.5 |
@@ -200,4 +200,47 @@ from 8c1afcd5 as the baseline:
 python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/locality.json.gz \
   --baseline-compiler /path/to/baseline/target/release/tinox \
   --baseline-runtime /path/to/baseline/runtime/runtime.c --larger-live-set --shuffle-live-set
+```
+
+## Reducing allocation during JSON serialization and sweeping whole slabs
+
+The Tinox build of a generated `@JsonSerializable` method borrows a builder
+from the current stack frame. Each nested serializer gets a separate frame.
+Short results are copied from a 128-byte scratch buffer to an exactly sized,
+pointer-free allocation. When the builder grows beyond that scratch space,
+it moves the output to managed storage and returns that buffer directly.
+The native builder API still accepts its existing heap-backed handles.
+
+The collector now reads each slab's packed size and mark metadata before
+sweeping. It clears marks in bulk when every occupied slot survives and
+returns an entirely dead slab directly to libc. Only mixed slabs need to
+link newly dead slots for reuse. The native regression fixture checks the
+heap and swept-byte counters across dead slabs and verifies serializer
+results across the scratch boundary and after explicit collections.
+
+Six fresh processes per workload and collector cover every execution order.
+Each HTTP process serves 6,000 measured requests via two clients. Every
+response is checked. CPU time is normalized to 1,000 requests. Allocation
+figures use each collector's own counter semantics as described above.
+[Raw trials, individual HTTP timings and runtime hashes](serializer-sweep-results.json.gz)
+
+| Workload (process medians) | Previous Tinox (d9cd6ef3) | Updated Tinox | Boehm |
+| --- | ---: | ---: | ---: |
+| Ordered 500k strings, µs per collection | 429.5 | 370.5 | 1,394 |
+| Shuffled 500k strings, µs per collection | 1,848 | 1,788.5 | 2,384 |
+| Allocated bytes per validated request | 107,283 | 63,433 | 127,217 |
+| CPU seconds per 1,000 validated requests | 0.0958 | 0.0775 | 0.0725 |
+| Validated requests/s | 5,781 | 6,117 | 5,994 |
+| HTTP p99, ms | 0.519 | 0.487 | 0.536 |
+| Peak service RSS, KiB | 8,924 | 9,250 | 9,856 |
+
+In this workload, Tinox allocated 41% fewer bytes and used 19% less CPU
+than its previous revision. Peak RSS rose by 326 KiB. The throughput
+ranges for updated Tinox and Boehm overlap. Tinox remains opt-in.
+
+```sh
+python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/serializer-sweep.json.gz \
+  --baseline-compiler /path/to/d9cd6ef3/target/release/tinox \
+  --baseline-runtime /path/to/d9cd6ef3/runtime/runtime.c \
+  --larger-live-set --shuffle-live-set --service-requests 6000
 ```

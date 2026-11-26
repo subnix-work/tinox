@@ -1992,6 +1992,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @pow(double, double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.fabs.f64(double)").unwrap();
         // JsonBuilder — used by @JsonSerializable toJson()
+        if self.local_gc {
+            writeln!(&mut self.ir, "declare i8* @tinox_json_render(i64*, void (i64*, i8*)*)").unwrap();
+        }
         writeln!(&mut self.ir, "declare i8* @jsonBuilderCreate()").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddInt(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddFloat(i8*, i8*, double)").unwrap();
@@ -7812,7 +7815,14 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir,"  br i1 %json_self_null, label %json_null, label %json_object").unwrap();
             writeln!(&mut self.ir,"json_null:\n  ret i8* getelementptr ([5 x i8], [5 x i8]* @{null_label}, i64 0, i64 0)\njson_object:").unwrap();
             let builder = self.temp();
-            writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            if self.local_gc {
+                let writer = format!(".tinox.json.write.{class_name}");
+                writeln!(&mut self.ir, "  %json = call i8* @tinox_json_render(i64* %self, void (i64*, i8*)* @{writer})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* %json\n}}").unwrap();
+                writeln!(&mut self.ir, "define internal void @{writer}(i64* %self, i8* {builder}) {{\nentry.tnx:").unwrap();
+            } else {
+                writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            }
 
             for (field_name, struct_idx, llvm_ty) in &data_fields {
                 // Intern field name as a string constant
@@ -7965,9 +7975,13 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
 
-            let result = self.temp();
-            writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
-            writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            if self.local_gc {
+                writeln!(&mut self.ir, "  ret void").unwrap();
+            } else {
+                let result = self.temp();
+                writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            }
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
         }

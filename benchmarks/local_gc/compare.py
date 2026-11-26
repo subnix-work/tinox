@@ -55,7 +55,7 @@ def request(port, path):
         conn.close()
 
 
-def service(binary, port, cores):
+def service(binary, port, cores, requests=1000):
     env = dict(os.environ, TINOX_HTTP_WORKERS="2")
     with subprocess.Popen(command(binary, cores), env=env, stdout=subprocess.DEVNULL) as proc:
         try:
@@ -88,7 +88,7 @@ def service(binary, port, cores):
             cpu = cpu_seconds(proc.pid)
             start = time.perf_counter()
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                batches = list(pool.map(client, [500, 500]))
+                batches = list(pool.map(client, [requests // 2, requests - requests // 2]))
             elapsed = time.perf_counter()-start
             cpu = cpu_seconds(proc.pid)-cpu
             after = json.loads(request(port, "/stats"))
@@ -115,7 +115,11 @@ def main():
     ap.add_argument("--baseline-runtime", type=Path, help="matching baseline runtime.c")
     ap.add_argument("--larger-live-set", action="store_true", help="also measure 500,000 live entries")
     ap.add_argument("--shuffle-live-set", action="store_true", help="also trace shuffled references and check every payload")
+    ap.add_argument("--service-requests", type=int, default=1000,
+                    help="validated HTTP requests per process, divided between two clients")
     args = ap.parse_args()
+    if args.service_requests < 2:
+        ap.error("--service-requests must be at least 2")
     if bool(args.baseline_compiler) != bool(args.baseline_runtime):
         ap.error("supply both baseline paths")
     compiler = args.compiler.resolve()
@@ -124,6 +128,7 @@ def main():
                    kernel=platform.release(), machine=platform.machine(), cores=cores, address_space_limit=ADDRESS_SPACE_LIMIT,
                    compiler=subprocess.check_output([compiler, "--version"], text=True).strip(), runs=[])
     sizes = [10000, 50000] + ([500000] if args.larger_live_set else [])
+    results["service_requests"] = args.service_requests
     results["pause_sizes"] = sizes
     def sha(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -165,7 +170,7 @@ def main():
                             raise ValueError(output)
                         sample = dict(stdout=output.splitlines())
                     else:
-                        sample = service(binaries[gc], port, cores)
+                        sample = service(binaries[gc], port, cores, args.service_requests)
                     results["runs"].append(dict(workload=name, collector=gc, trial=trial, **sample))
                     data = (json.dumps(results, indent=2)+"\n").encode()
                     if args.output.suffix == ".gz":
