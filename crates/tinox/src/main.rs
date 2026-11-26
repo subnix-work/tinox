@@ -1610,6 +1610,15 @@ fn repl() {
     println!("Bye!");
 }
 
+/// Program text for a statement-block entry: the session declarations plus the entry as the
+/// body of a throwaway function. Statements are newline-terminated, so the entry is used as typed.
+fn repl_statement_source(session_decls: &str, entry: &str, turn: usize) -> String {
+    format!(
+        "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
+        session_decls, turn, entry, turn
+    )
+}
+
 /// Evaluate one REPL entry: either a declaration (saved to session) or an expression (printed).
 fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
     // Detect declarations: starts with fn, class, interface, enum, let, var at top level
@@ -1643,31 +1652,17 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
         return;
     }
 
-    // Detect if this is a statement block (contains ; or multiple lines or let/var)
+    // Detect if this is a statement block (multiple lines or let/var/println/...).
+    // A `;` is not a statement terminator any more (#445), so it is never added
+    // here, and one typed by the user is reported by the parser.
     let lines: Vec<&str> = entry.lines().filter(|l| !l.trim().is_empty()).collect();
-    let has_semicolons = entry.contains(';');
     let is_multi_line = lines.len() > 1;
     let starts_with_stmt = matches!(first_token, "let" | "var" | "println" | "print" | "return");
 
-    let is_stmt_block = is_multi_line || has_semicolons || starts_with_stmt;
+    let is_stmt_block = is_multi_line || starts_with_stmt;
 
     if is_stmt_block {
-        // Ensure each statement line ends with ; (normalize)
-        let body: String = entry.lines()
-            .map(|l| {
-                let t = l.trim_end();
-                if t.is_empty() || t.ends_with(';') || t.ends_with('{') || t.ends_with('}') {
-                    l.to_string()
-                } else {
-                    format!("{};", l)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let src = format!(
-            "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
-            session_decls, turn, body, turn
-        );
+        let src = repl_statement_source(session_decls, entry, turn);
         match repl_compile_and_run(&src, turn) {
             Ok(output) => {
                 if !output.is_empty() {
@@ -1723,6 +1718,21 @@ mod repl_semantics_tests {
         assert_eq!(output.trim(), "0\n1.5");
     }
 
+    #[test]
+    fn multi_line_and_var_entries_are_used_as_typed_without_semicolons() {
+        let entry = "var x: Int64 = 41\nprintln((x + 1).toString())";
+        let source = super::repl_statement_source("", entry, 0);
+        assert!(!source.contains(';'), "{source}");
+        let output = super::repl_compile_and_run(&source, std::process::id() as usize + 1).unwrap();
+        assert_eq!(output.trim(), "42");
+    }
+
+    #[test]
+    fn a_typed_semicolon_is_reported_not_silently_accepted() {
+        let source = super::repl_statement_source("", "var x: Int64 = 1;\nprintln(x.toString())", 0);
+        let err = super::repl_compile_and_run(&source, std::process::id() as usize + 2).unwrap_err();
+        assert!(err.contains("semicolons were removed"), "{err}");
+    }
 }
 
 fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
