@@ -806,10 +806,8 @@
       </div>
       <div class="card">
         <div class="icon">♻️</div>
-        <h4>Boehm GC</h4>
-        <p>Tinox verwendet den <strong>Boehm Garbage Collector</strong> – einen konservativen,
-        thread-sicheren GC. Speicher wird automatisch freigegeben; der Entwickler
-        muss nichts manuell verwalten.</p>
+        <h4>Garbage Collection</h4>
+        <p>Native Builds auf Linux x86-64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.</p>
       </div>
       <div class="card">
         <div class="icon">🧵</div>
@@ -1013,12 +1011,8 @@
 
     <h3>Speicherverwaltung</h3>
     <p>
-      Tinox verwendet den <strong>Boehm Garbage Collector</strong> (libgc) für automatisches
-      Speichermanagement. Der GC ist konservativ: Er scannt Stack und Register nach
-      Zeigern und gibt nicht mehr erreichbare Objekte frei – ohne dass der Entwickler
-      explizit <code>free()</code> aufrufen muss. Durch <code>GC_THREADS</code> ist er
-      vollständig thread-sicher und funktioniert korrekt mit dem epoll-basierten
-      HTTP-Server-Thread-Pool.
+      Native Builds auf Linux x86-64 mit glibc verwenden den Tinox-GC. Mit <code>TINOX_GC=boehm</code> beim Bauen lässt sich Boehm auswählen.
+      Beide Collectoren verfolgen Referenzen und geben unerreichbare Objekte frei. Native ARM64-Builds und die REPL verwenden Boehm.
     </p>
     <p>
       Für häufige Operationen (Sort, JSON-Parsing) werden
@@ -1942,7 +1936,7 @@ epoll_fd = epoll_create1(0)
         <h4>✓ Vorteile</h4>
         <ul>
           <li>Sehr geringe Latenz und hoher Durchsatz dank LLVM + epoll</li>
-          <li>Boehm GC – automatisches Speichermanagement ohne Borrow-Checker-Komplexität</li>
+          <li>GC – automatisches Speichermanagement ohne Borrow-Checker-Komplexität</li>
           <li>Geringe Startup-Zeit (&lt;1ms) – ideal für Serverless/Lambda</li>
           <li>Java-ähnliche Syntax – niedrige Einstiegshürde für Backend-Entwickler</li>
           <li>Annotation-gesteuertes REST: minimaler Boilerplate</li>
@@ -1956,7 +1950,7 @@ epoll_fd = epoll_create1(0)
       <div class="cons">
         <h4>✗ Nachteile</h4>
         <ul>
-          <li>Konservativer GC (Boehm) – kann bei Pointer-intensiven Workloads etwas langsamer sein als manuelles Management</li>
+          <li>Konservativer GC – kann bei Pointer-intensiven Workloads etwas langsamer sein als manuelles Management</li>
           <li>Kleines Ökosystem – keine reifen Third-Party-Bibliotheken</li>
           <li>Keine standardisierte Spezifikation – Sprache ändert sich schnell</li>
           <li>Compiler-Fehler noch nicht so hilfreich wie bei Rust oder Go</li>
@@ -1981,7 +1975,7 @@ epoll_fd = epoll_create1(0)
         <tr><td>Java / Kotlin</td><td>GC</td><td>Hoch (kein UAF)</td><td>GC-Pausen</td></tr>
         <tr><td>Rust</td><td>Ownership + Borrow-Checker</td><td>Sehr hoch (compile-time)</td><td>Maximal</td></tr>
         <tr><td>Go</td><td>GC (concurrent)</td><td>Hoch</td><td>Gut</td></tr>
-        <tr><td><strong>Tinox</strong></td><td>Boehm GC (konservativ)</td><td>GC verhindert Leaks</td><td>Sehr hoch</td></tr>
+        <tr><td><strong>Tinox</strong></td><td>Konservativer GC</td><td>GC verhindert Leaks</td><td>Sehr hoch</td></tr>
         <tr><td>C/C++</td><td>Manuell</td><td>Entwicklerverantwortung</td><td>Maximal</td></tr>
       </tbody>
     </table>
@@ -2078,7 +2072,7 @@ epoll_fd = epoll_create1(0)
         </tr>
         <tr>
           <td>Garbage Collector</td>
-          <td>Ja (Boehm GC)</td>
+          <td>Ja (GC)</td>
           <td>Ja (G1GC, ZGC)</td>
           <td>Ja (concurrent)</td>
           <td>Nein (Ownership)</td>

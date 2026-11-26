@@ -1,22 +1,23 @@
-# Tinox collector experiment (#712)
+# Tinox garbage collector (#712)
 
-The normal build uses Boehm. To try the Tinox collector on Linux/x86-64 with
-glibc, run from a checkout with the native Tinox toolchain:
+Native builds use the Tinox collector by default on Linux/x86-64 with glibc.
+To verify the default, run from a checkout with the native Tinox toolchain:
 
 ```sh
 cargo build --release --bin tinox
-TINOX_GC=tinox target/release/tinox build tests/e2e/gc_telemetry/Main.tnx -o /tmp/gc-demo
+target/release/tinox build tests/e2e/gc_telemetry/Main.tnx -o /tmp/gc-demo
 ldd /tmp/gc-demo
 /tmp/gc-demo
 ```
 
-The selector applies at compile time. `TINOX_GC=boehm` selects the baseline.
-The experimental executable uses libc for block storage and has no dependency
+The selector applies at compile time. Rebuild with `TINOX_GC=boehm tinox build`
+to switch to Boehm. Native ARM64 and checked builds default to Boehm.
+The Tinox-GC executable uses libc for block storage and has no dependency
 on libgc. The runtime flags and link inputs participate in the build cache.
-The REPL and pinned Docker source builder support Boehm. The prototype requires
+The REPL and pinned Docker source builder support Boehm. Tinox GC requires
 the normal runtime build (debug or release). Checked mode keeps a separate
 registry of object addresses, and the no-GC sanitizer mode uses a different
-allocator; both combinations are rejected.
+allocator; an explicit Tinox-GC request is rejected in either mode.
 
 ## Heap and roots
 
@@ -193,7 +194,7 @@ collections. [Raw samples and hashes](locality-results.json.gz)
 At 500k, the current collector completes an ordered collection in 33% of
 Boehm's time and a shuffled collection in 80%. HTTP p99 ranges overlap across
 all three versions. Boehm used less service CPU and had the highest median
-throughput. Tinox remains opt-in. To reproduce, use the compiler and runtime
+throughput. Tinox was opt-in at the time of this measurement. To reproduce, use the compiler and runtime
 from 8c1afcd5 as the baseline:
 
 ```sh
@@ -236,7 +237,7 @@ figures use each collector's own counter semantics as described above.
 
 In this workload, Tinox allocated 41% fewer bytes and used 19% less CPU
 than its previous revision. Peak RSS rose by 326 KiB. The throughput
-ranges for updated Tinox and Boehm overlap. Tinox remains opt-in.
+ranges for updated Tinox and Boehm overlap. Tinox was opt-in at the time of this measurement.
 
 ```sh
 python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/serializer-sweep.json.gz \

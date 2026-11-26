@@ -19,8 +19,8 @@ JSON (de)serialization, and CLI argument parsing all work by attaching
 `@Annotation`s to classes/methods/parameters rather than hand-writing
 wiring code — see [Annotations](#annotations) below. Programs compile
 through a hand-emitted LLVM IR backend to native executables, linked
-against a C runtime (`runtime/runtime.c`) that provides a Boehm
-garbage collector, real POSIX-thread concurrency, and the HTTP/WebSocket/
+against a C runtime (`runtime/runtime.c`) that provides automatic
+garbage collection, real POSIX-thread concurrency, and the HTTP/WebSocket/
 AMQP/TLS primitives the stdlib annotations build on.
 
 ## Lexical Structure
@@ -708,8 +708,9 @@ extern fn ffi_not(b: Bool) -> Bool
 **Strings.** Tinox to C: the pointer is borrowed for the duration of the call;
 C must not keep it. C to Tinox: the returned pointer is adopted as the
 `String` without a copy, so it must be NUL-terminated and stay valid for the
-life of the value: return a literal/static, or memory from `GC_malloc_atomic`
-or `GC_strdup` (`<gc.h>`, the collector Tinox links against). Memory from
+life of the value: return a literal/static, or allocate the string with `tinox_alloc`
+from `runtime.h`. Native code using the Boehm API directly requires a
+`TINOX_GC=boehm` build. Memory from
 `malloc` is never freed by the collector, and `free`ing it from C afterwards
 leaves the `String` dangling. Embedded NUL bytes cannot cross the boundary.
 
@@ -1007,7 +1008,7 @@ for row in rows
 | Parser         | Done       | AST, namespace/`fnc`, generics                    |
 | Type Checker   | Done       | Classes, interfaces, enums, generics, annotations |
 | Code Gen       | Done       | Hand-emitted LLVM IR backend                      |
-| Runtime        | Done       | C runtime (Boehm GC, I/O, threading, HTTP/WS/AMQP/TLS) |
+| Runtime        | Done       | C runtime (Tinox and Boehm GC, I/O, threading, HTTP/WS/AMQP/TLS) |
 | Formatter      | Done       | `tinox fmt` — Allman-style brace output           |
 | LSP            | Done       | `tinox-lsp`, Eclipse plugin                       |
 | REPL           | Done       | `tinox repl`                                      |

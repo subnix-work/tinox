@@ -30,7 +30,7 @@ Requirements: `clang`, `llc` (LLVM tools)
 
 **Platform: Linux only, by design.** The C runtime's HTTP/WebSocket/HTTP2
 event loop is epoll-based (no kqueue/IOCP fallback), it relies on Linux's
-`MSG_NOSIGNAL` socket flag, and crash backtraces + the Boehm GC's
+`MSG_NOSIGNAL` socket flag, and crash backtraces and the Tinox GC's
 stop-the-world suspend assume a glibc/ELF target. Compiling
 `runtime/runtime.c` on another OS fails immediately with a clear error
 rather than a confusing cascade of missing-header errors. Tracked as
@@ -1064,22 +1064,18 @@ tinox/
 
 ## Garbage Collection
 
-By default, the runtime uses the [Boehm GC](https://www.hboehm.info/gc/) in its
-default conservative, **stop-the-world, non-generational, non-incremental**
-configuration — every collection is a full mark-sweep over the entire
-live heap, pausing all threads (`spawn` is real pthreads) simultaneously.
-Measured pause times scale with live heap size, not total heap size:
-roughly 90 µs at 10k live objects (0.6 MB) up to ~31 ms at 5M live
-objects (~300 MB) on the dev machine — see
-[`benchmarks/gc_pause_results.md`](benchmarks/gc_pause_results.md) for
-full numbers and methodology (`benchmarks/bench_gc_pause/Main.tnx`). No
-tuning knobs are currently exposed beyond
-`tinox.core.debug.Debug::gcCollect()`/`::memoryUsage()`; if a workload's
-live set is large enough for this to matter, that's the number to watch.
+Native debug and release builds on Linux x86-64 with glibc use the Tinox
+garbage collector by default. To build the same program with Boehm, run
+`TINOX_GC=boehm tinox build`. The choice is made at build time. Rebuild
+the executable to switch back. Both collectors support
+`Debug::gcCollect()` and `Debug::memoryUsage()`.
 
-On Linux x86-64 with glibc, `TINOX_GC=tinox tinox build` selects the
-experimental Tinox collector. See the [collector contract, measurements and
-reproduction commands](benchmarks/local_gc/README.md).
+Native ARM64 builds, the REPL, checked builds and the pinned Docker
+source builder use Boehm. The no-GC sanitizer configuration uses its own
+allocator. An explicit `TINOX_GC=tinox` request on an unsupported build
+reports an error. Native libraries that use Boehm's API directly require
+the Boehm build. See the [collector contract and measurements](benchmarks/local_gc/README.md)
+for native thread registration, signal use and heap counters.
 
 ## AI coding evaluations
 

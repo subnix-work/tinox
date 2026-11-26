@@ -113,7 +113,7 @@ pub struct SourceBuildSpec<'a> {
 pub fn generate_source_build_dockerfile(spec: &SourceBuildSpec) -> String {
     let mut s = String::new();
     s.push_str(&format!("FROM {} AS build\n", spec.builder));
-    s.push_str(&format!("ENV TINOX_TLS={} TINOX_HTTP3={}\n", u8::from(spec.tls), u8::from(spec.http3)));
+    s.push_str(&format!("ENV TINOX_TLS={} TINOX_HTTP3={} TINOX_GC=boehm\n", u8::from(spec.tls), u8::from(spec.http3)));
     s.push_str("WORKDIR /src\n");
     s.push_str("COPY project/ /src/\n");
     // `tinox install` verifies every dependency against tinox.lock when one
@@ -284,7 +284,7 @@ mod tests {
             labels: &labels,
         });
         assert!(out.starts_with("FROM ghcr.io/x/tinox-builder@sha256:abc AS build\n"));
-        assert!(out.contains("ENV TINOX_TLS=1 TINOX_HTTP3=0"));
+        assert!(out.contains("ENV TINOX_TLS=1 TINOX_HTTP3=0 TINOX_GC=boehm\n"));
         assert!(out.contains("COPY project/ /src/"));
         assert!(out.contains("RUN mkdir -p /out && tinox install && tinox build --release -o /out/app"));
         assert!(out.contains("COPY --from=build /out/app /app/app"));

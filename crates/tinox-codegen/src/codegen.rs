@@ -761,7 +761,7 @@ impl CodeGen {
             dbg_declare_used: false,
             di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
-            local_gc: std::env::var_os("TINOX_GC").is_some_and(|v| v == "tinox"),
+            local_gc: false,
             struct_field_decl_types: HashMap::new(),
             field_defaults: HashMap::new(),
             closure_envs: HashMap::new(),
@@ -6694,6 +6694,9 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{} = sitofp {} {} to double", c, ty, val).unwrap();
         c
     }
+
+    /// Match the allocation and serialization ABI of the linked runtime.
+    pub fn set_local_gc(&mut self, enabled: bool) { self.local_gc = enabled; }
 
     /// Emit `DILocalVariable`s for parameters and locals (`--debug` builds).
     pub fn set_debug_variables(&mut self, on: bool) {
