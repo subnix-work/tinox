@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "base64"
-version = "1.1.8"
+version = "1.1.9"
 description = "tinox.core.base64, bundled with the compiler and also available as a standalone tinox-central package."

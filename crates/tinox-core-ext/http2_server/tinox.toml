@@ -1,15 +1,15 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "http2_server"
-version = "1.1.15"
+version = "1.1.16"
 description = "tinox.core.http2_server, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "hpack"
-version = "1.2.10"
+version = "1.2.11"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.12"
+version = "1.2.13"

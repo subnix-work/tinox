@@ -61,7 +61,7 @@ class C091
 }
 """
 TOML = """[package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "amqpobs"
 version = "0.1.0"
 description = ""

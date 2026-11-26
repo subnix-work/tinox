@@ -7,5 +7,5 @@
 ws-port-8793 = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(ws_annotations) | binary(ws_concurrent_connections)'
+filter = 'binary(ws_annotations) | binary(ws_concurrent_connections) | (binary(concurrency_budgets) & test(websocket_connections_over_budget))'
 test-group = 'ws-port-8793'
