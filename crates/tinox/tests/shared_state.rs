@@ -18,7 +18,8 @@ fn concurrent_first_access_publishes_one_initialized_dependency_graph() {
     fs::write(directory.join("Eager.tnx"), "import Leaf\n@Startup class Eager { @Inject var leaf: Leaf\nvar ready: Int64 = 29 }").unwrap();
     let fields: String = (0..2000).map(|i| format!("var field{i}: Int64 = 17\n")).collect();
     fs::write(directory.join("Service.tnx"), format!("import Leaf\n@ApplicationComponent class Service {{ {fields} @Inject var leaf: Leaf }}")).unwrap();
-    success(Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&directory).args(["build", "Main.tnx", "-o", "program"]));
+    // The native clients below use Boehm directly and relink the emitted IR.
+    success(Command::new(env!("CARGO_BIN_EXE_tinox")).env("TINOX_GC", "boehm").current_dir(&directory).args(["build", "Main.tnx", "-o", "program"]));
     let ir = fs::read_to_string(directory.join("program.ll")).unwrap();
     assert!(ir.contains("define i32 @tinox_main("));
     // Keep the real generated providers and startup constructors, but substitute

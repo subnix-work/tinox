@@ -1,0 +1,5 @@
+class Probe {
+    var handle: Int64
+    var text: String
+    var score: Float64
+}

@@ -12,7 +12,7 @@ const C_SRC: &str = r#"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <gc.h>
+#include "runtime.h"
 
 static int64_t counter = 0;
 
@@ -31,7 +31,7 @@ int64_t ffi_strlen(const char* s)     { return (int64_t)strlen(s); }
 const char* ffi_static(void)          { return "static-string"; }
 char* ffi_greet(const char* name) {
     size_t n = strlen(name) + 8;
-    char* out = GC_malloc_atomic(n);
+    char* out = tinox_alloc(n);
     snprintf(out, n, "hello, %s", name);
     return out;
 }

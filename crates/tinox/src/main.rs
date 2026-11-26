@@ -1139,11 +1139,13 @@ fn build_dev_config_summary_json() -> String {
 /// links against, given the same feature flags that decide what it links.
 /// Pure so it's directly unit-testable; `docker_runtime_packages` below
 /// gathers the (env-var- and tinox.toml-dependent) inputs.
-fn compute_runtime_packages(tls_enabled: bool, db_driver: Option<&str>, extra: &[String]) -> Vec<String> {
+fn compute_runtime_packages(boehm: bool, tls_enabled: bool, db_driver: Option<&str>, extra: &[String]) -> Vec<String> {
     // libgc1: Boehm GC (-lgc). zlib1g: WebSocket permessage-deflate (-lz).
-    // Both linked unconditionally, same as in compile_ll_to_exe. libm/
+    // libm/
     // libpthread need no separate package -- part of glibc (libc6).
-    let mut pkgs = vec!["libgc1".to_string(), "zlib1g".to_string(), "ca-certificates".to_string()];
+    let mut pkgs = Vec::new();
+    if boehm { pkgs.push("libgc1".to_string()); }
+    pkgs.extend(["zlib1g".to_string(), "ca-certificates".to_string()]);
     if tls_enabled {
         pkgs.push("libssl3".to_string());
     }
@@ -1164,7 +1166,7 @@ fn compute_runtime_packages(tls_enabled: bool, db_driver: Option<&str>, extra: &
 /// Reads the same env vars / tinox.toml `[database]` section
 /// `compile_ll_to_exe` reads to decide what to link, so the Docker image's
 /// installed packages track the actual binary instead of guessing.
-fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
+fn docker_runtime_packages(boehm: bool, extra: &[String]) -> Vec<String> {
     let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
     let http3_enabled = tls_enabled
         && std::env::var("TINOX_HTTP3").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
@@ -1178,7 +1180,7 @@ fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
         );
     }
     let db_driver = read_database_config();
-    compute_runtime_packages(tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
+    compute_runtime_packages(boehm, tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
 }
 
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -1352,6 +1354,10 @@ fn docker_build(args: &[String]) {
     let opt = if debug { OptLevel::Debug } else { OptLevel::Release };
     let tag_override = parse_flag_value(args, "--tag");
     let source_build = args.iter().any(|a| a == "--source-build");
+    if source_build && std::env::var_os("TINOX_GC").is_some_and(|v| v != "boehm") {
+        eprintln!("error: --source-build only supports Boehm in the pinned builder image; use the host build for TINOX_GC=tinox");
+        std::process::exit(1);
+    }
 
     // Project mode only -- the [docker] section this command reads only
     // exists in a tinox.toml, so (unlike `build`/`run`) there's no bare-file
@@ -1386,7 +1392,11 @@ fn docker_build(args: &[String]) {
     if uid == 0 {
         eprintln!("warning: [docker] uid = 0 -- the container process will run as root");
     }
-    let packages = docker_runtime_packages(&cfg.extra_packages);
+    let boehm = source_build || native_collector().unwrap_or_else(|err| {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }).links_boehm();
+    let packages = docker_runtime_packages(boehm, &cfg.extra_packages);
     let build_dir = Path::new(".tinox").join("docker");
     if let Err(e) = fs::create_dir_all(&build_dir) {
         eprintln!("error: cannot create {}: {}", build_dir.display(), e);
@@ -1719,6 +1729,9 @@ mod repl_semantics_tests {
 }
 
 fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
+    if std::env::var_os("TINOX_GC").is_some_and(|v| v != "boehm") {
+        return Err("the REPL supports only TINOX_GC=boehm; use tinox build or run for the Tinox collector".into());
+    }
     // Lex + parse + check + lower through the same semantic boundary as builds.
     let tokens = Lexer::new(src).tokenize()
         .map_err(|errs| errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
@@ -3499,6 +3512,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     }).collect();
 
     let mut cg = CodeGen::new();
+    cg.set_local_gc(native_collector()? == Collector::Tinox);
     cg.set_expr_value_types(tc.expr_value_types());
     cg.set_semantic_facts(tc.semantic_facts());
     cg.set_interface_info(iface, impls);
@@ -5491,6 +5505,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
 
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
+    codegen.set_local_gc(native_collector()? == Collector::Tinox);
     codegen.set_debug_variables(opt == OptLevel::Debug);
     codegen.set_expr_value_types(checked.expr_types);
     codegen.set_semantic_facts(checked.semantics);
@@ -5721,6 +5736,51 @@ fn verify_ir(ir_path: &str) -> Result<(), Failure> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Collector { Tinox, Boehm, None }
+
+impl Collector {
+    fn links_boehm(self) -> bool {
+        // No-GC diagnostic builds historically also link libgc for explicit
+        // native symbols, even though runtime allocations use libc.
+        self != Self::Tinox
+    }
+}
+
+fn native_collector() -> Result<Collector, String> {
+    let native_supported = cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"));
+    let request = std::env::var_os("TINOX_GC");
+    let flags = std::env::var("TINOX_CFLAGS").unwrap_or_default();
+    select_collector(request.as_deref(), native_supported, &flags)
+}
+
+fn select_collector(request: Option<&std::ffi::OsStr>, native_supported: bool, flags: &str) -> Result<Collector, String> {
+    let mut no_gc = false;
+    let mut checked = false;
+    let mut args = flags.split_whitespace();
+    while let Some(arg) = args.next() {
+        let (define, name) = match arg {
+            "-D" | "-U" => (arg == "-D", args.next().unwrap_or("")),
+            _ if arg.starts_with("-D") || arg.starts_with("-U") => (arg.starts_with("-D"), &arg[2..]),
+            _ => continue,
+        };
+        match name.split('=').next() {
+            Some("TINOX_NO_GC") => no_gc = define,
+            Some("TINOX_CHECKED") => checked = define,
+            _ => {}
+        }
+    }
+    let supported = native_supported && !checked && !no_gc;
+    match request {
+        Some(v) if v == "tinox" && !supported => Err("TINOX_GC=tinox requires a normal Linux x86-64 glibc build without TINOX_CHECKED or TINOX_NO_GC".into()),
+        Some(v) if v != "tinox" && v != "boehm" => Err("TINOX_GC must be boehm or tinox".into()),
+        _ if no_gc => Ok(Collector::None),
+        Some(v) if v == "boehm" => Ok(Collector::Boehm),
+        _ if supported => Ok(Collector::Tinox),
+        _ => Ok(Collector::Boehm),
+    }
+}
+
 struct RuntimeOptions {
     target: tinox_codegen::target::Target,
     source: String,
@@ -5783,7 +5843,11 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     } else {
         None
     };
+    let collector = native_collector()?;
     let mut runtime_flags = vec!["-O3"];
+    if collector == Collector::Tinox {
+        runtime_flags.push("-DTINOX_LOCAL_GC");
+    }
     let pg_include_flag = pg_include_dir.as_ref().map(|d| format!("-I{d}"));
     if db_driver == "postgres" {
         runtime_flags.push("-DTINOX_DB_POSTGRES");
@@ -5802,7 +5866,10 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
         runtime_flags.push("-DTINOX_HTTP3");
     }
     runtime_flags.extend(extra_cflags.iter().map(|s| s.as_str()));
-    let mut link_args = vec!["-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
+    let mut link_args = vec!["-lm", "-lpthread", "-lz", "-no-pie"];
+    if collector.links_boehm() {
+        link_args.push("-lgc");
+    }
     if db_driver == "postgres" {
         link_args.push("-lpq");
     } else if db_driver == "mysql" {
@@ -6331,27 +6398,41 @@ mod docker_tests {
     }
 
     #[test]
+    fn gc_selection_respects_target_diagnostics_and_explicit_requests() {
+        let boehm = Some(std::ffi::OsStr::new("boehm"));
+        let tinox = Some(std::ffi::OsStr::new("tinox"));
+        assert_eq!(select_collector(None, true, "").unwrap(), Collector::Tinox);
+        assert_eq!(select_collector(None, false, "").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(boehm, true, "").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(None, true, "-D TINOX_CHECKED=1").unwrap(), Collector::Boehm);
+        assert_eq!(select_collector(None, true, "-DTINOX_NO_GC").unwrap(), Collector::None);
+        assert!(select_collector(tinox, true, "-DTINOX_CHECKED").is_err());
+        assert!(select_collector(tinox, false, "").is_err());
+        assert!(select_collector(Some(std::ffi::OsStr::new("other")), true, "").is_err());
+    }
+
+    #[test]
     fn runtime_packages_baseline_no_tls() {
-        let pkgs = compute_runtime_packages(false, None, &[]);
+        let pkgs = compute_runtime_packages(true, false, None, &[]);
         assert_eq!(pkgs, vec!["libgc1", "zlib1g", "ca-certificates"]);
     }
 
     #[test]
     fn runtime_packages_tls_adds_libssl() {
-        let pkgs = compute_runtime_packages(true, None, &[]);
+        let pkgs = compute_runtime_packages(true, true, None, &[]);
         assert!(pkgs.contains(&"libssl3".to_string()));
     }
 
     #[test]
     fn runtime_packages_db_driver_mapped() {
-        assert!(compute_runtime_packages(false, Some("postgres"), &[]).contains(&"libpq5".to_string()));
-        assert!(compute_runtime_packages(false, Some("mysql"), &[]).contains(&"libmariadb3".to_string()));
-        assert!(compute_runtime_packages(false, Some("sqlite"), &[]).contains(&"libsqlite3-0".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("postgres"), &[]).contains(&"libpq5".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("mysql"), &[]).contains(&"libmariadb3".to_string()));
+        assert!(compute_runtime_packages(true, false, Some("sqlite"), &[]).contains(&"libsqlite3-0".to_string()));
     }
 
     #[test]
     fn runtime_packages_extra_appended_without_duplicates() {
-        let pkgs = compute_runtime_packages(true, None, &["libssl3".to_string(), "libfoo".to_string()]);
+        let pkgs = compute_runtime_packages(true, true, None, &["libssl3".to_string(), "libfoo".to_string()]);
         assert_eq!(pkgs.iter().filter(|p| *p == "libssl3").count(), 1);
         assert!(pkgs.contains(&"libfoo".to_string()));
     }

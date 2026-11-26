@@ -178,7 +178,7 @@ route wrappers establish the context before authentication, binding and dispatch
 and release its GC roots after the body returns. Early 400/401/403/415 responses,
 normal serialization, propagated exceptions and cooperative cancellation all pass
 through that outer cleanup boundary. The cache is thread-local, explicitly
-registered with the Boehm GC and never inherited by another thread. Ending a
+visible to the selected GC and never inherited by another thread. Ending a
 request releases ownership deterministically; physical heap reclamation remains
 GC-dependent. There is no implicit destructor or native-resource disposal hook.
 Use `defer`/`finally` for resources and `@OnStop` for application ownership.

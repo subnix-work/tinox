@@ -413,6 +413,7 @@ pub struct CodeGen {
     /// DI type nodes by a stable description, so each is emitted once.
     di_type_cache: HashMap<String, u32>,
     struct_layouts: HashMap<String, Vec<String>>,
+    local_gc: bool,
     /// Declared Tinox type of every field per class (inherited ones included), for debug info.
     struct_field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// Per class: the `var x: T = <literal>;` defaults declared on its
@@ -760,6 +761,7 @@ impl CodeGen {
             dbg_declare_used: false,
             di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
+            local_gc: false,
             struct_field_decl_types: HashMap::new(),
             field_defaults: HashMap::new(),
             closure_envs: HashMap::new(),
@@ -1499,6 +1501,32 @@ impl CodeGen {
         ty.with_bindings(&bindings)
     }
 
+    /// The native ABI permits pointers in 64-bit integer handles. Keep them,
+    /// references, synthetic and unknown fields in the conservative set.
+    /// Only proven non-pointer slots can be omitted.
+    fn emit_object_allocation(&mut self, ptr: &str, name: &str, layout: &[String]) {
+        use tinox_typecheck::ValueType;
+        let bytes = layout.len() * 8;
+        if self.local_gc && !layout.is_empty() && layout.len() <= 64 {
+            let mut trace = 0u64;
+            let mut specialized = false;
+            for (i, field) in layout.iter().enumerate() {
+                if matches!(self.semantic_field_type(name, field),
+                    Some(ValueType::Bool | ValueType::Float | ValueType::Float32 |
+                         ValueType::Integer { bits: 8 | 16 | 32, .. })) {
+                    specialized = true;
+                } else {
+                    trace |= 1u64 << i;
+                }
+            }
+            if specialized {
+                writeln!(&mut self.ir, "{ptr} = call i8* @tinox_alloc_typed(i64 {bytes}, i64 {trace})").unwrap();
+                return;
+            }
+        }
+        writeln!(&mut self.ir, "{ptr} = call i8* @tinox_alloc(i64 {bytes})").unwrap();
+    }
+
     fn semantic_field_type(&self, class: &str, field: &str) -> Option<tinox_typecheck::ValueType> {
         if let Some(tinox_parser::Type::Generic { name, args }) = self.specialization_types.get(class) {
             let bindings = self.generic_classes.get(name)?.type_params.iter().cloned().zip(args.iter().map(tinox_typecheck::ValueType::from_parser_type)).collect();
@@ -1911,6 +1939,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_newline()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
+        if self.local_gc {
+            writeln!(&mut self.ir, "declare i8* @tinox_alloc_typed(i64, i64)").unwrap();
+        }
         writeln!(&mut self.ir, "declare void @tinox_panic(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
@@ -1961,6 +1992,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @pow(double, double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.fabs.f64(double)").unwrap();
         // JsonBuilder — used by @JsonSerializable toJson()
+        if self.local_gc {
+            writeln!(&mut self.ir, "declare i8* @tinox_json_render(i64*, void (i64*, i8*)*)").unwrap();
+        }
         writeln!(&mut self.ir, "declare i8* @jsonBuilderCreate()").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddInt(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddFloat(i8*, i8*, double)").unwrap();
@@ -6661,6 +6695,9 @@ tr_done_{idx}:"#).unwrap();
         c
     }
 
+    /// Match the allocation and serialization ABI of the linked runtime.
+    pub fn set_local_gc(&mut self, enabled: bool) { self.local_gc = enabled; }
+
     /// Emit `DILocalVariable`s for parameters and locals (`--debug` builds).
     pub fn set_debug_variables(&mut self, on: bool) {
         self.debug_variables = on;
@@ -7781,7 +7818,14 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir,"  br i1 %json_self_null, label %json_null, label %json_object").unwrap();
             writeln!(&mut self.ir,"json_null:\n  ret i8* getelementptr ([5 x i8], [5 x i8]* @{null_label}, i64 0, i64 0)\njson_object:").unwrap();
             let builder = self.temp();
-            writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            if self.local_gc {
+                let writer = format!(".tinox.json.write.{class_name}");
+                writeln!(&mut self.ir, "  %json = call i8* @tinox_json_render(i64* %self, void (i64*, i8*)* @{writer})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* %json\n}}").unwrap();
+                writeln!(&mut self.ir, "define internal void @{writer}(i64* %self, i8* {builder}) {{\nentry.tnx:").unwrap();
+            } else {
+                writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            }
 
             for (field_name, struct_idx, llvm_ty) in &data_fields {
                 // Intern field name as a string constant
@@ -7934,9 +7978,13 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
 
-            let result = self.temp();
-            writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
-            writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            if self.local_gc {
+                writeln!(&mut self.ir, "  ret void").unwrap();
+            } else {
+                let result = self.temp();
+                writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            }
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
@@ -13435,13 +13483,7 @@ tr_done_{idx}:"#).unwrap();
                 let name = &resolved_name;
                 let ptr = self.temp();
                 let layout = self.struct_layouts.get(name).cloned().unwrap_or_default();
-                let size = layout.len() * 8;
-                writeln!(
-                    &mut self.ir,
-                    "{} = call i8* @tinox_alloc(i64 {})",
-                    ptr, size
-                )
-                .unwrap();
+                self.emit_object_allocation(&ptr, name, &layout);
                 let typed_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
 
@@ -13847,17 +13889,11 @@ tr_done_{idx}:"#).unwrap();
                 let layout_clone = self.struct_layouts.get(&effective_class).cloned();
                 let has_vtable = self.classes_with_vtable.contains(&effective_class);
                 let ptr = self.temp();
-                let size = if let Some(ref layout) = layout_clone {
-                    layout.len() * 8
+                if let Some(layout) = &layout_clone {
+                    self.emit_object_allocation(&ptr, &effective_class, layout);
                 } else {
-                    8
-                };
-                writeln!(
-                    &mut self.ir,
-                    "{} = call i8* @tinox_alloc(i64 {})",
-                    ptr, size
-                )
-                .unwrap();
+                    writeln!(&mut self.ir, "{ptr} = call i8* @tinox_alloc(i64 8)").unwrap();
+                }
                 let typed_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
 

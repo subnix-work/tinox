@@ -175,6 +175,7 @@ import Layer
         Command::new(env!("CARGO_BIN_EXE_tinox"))
             .current_dir(&directory)
             .env("TINOX_HOME", &directory)
+            .env("TINOX_GC", "boehm") // relinked below against the standalone Boehm runtime
             .args(["build", "Main.tnx", "-o", "unmanaged"]),
     );
     let ir = fs::read_to_string(directory.join("unmanaged.ll")).unwrap();
@@ -356,6 +357,7 @@ fn native_threads_isolate_graphs_and_context_end_drops_the_cache() {
     success(
         Command::new(env!("CARGO_BIN_EXE_tinox"))
             .current_dir(&directory)
+            .env("TINOX_GC", "boehm") // relinked below against the standalone Boehm runtime
             .args(["build", "Main.tnx", "-o", "program"]),
     );
     let ir = fs::read_to_string(directory.join("program.ll")).unwrap();
