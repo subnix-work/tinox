@@ -33,3 +33,12 @@ sha2 = "0.10"
 [profile.release]
 opt-level = 3
 lto = true
+
+# Used by `make test` only. The ~135 integration-test binaries each link the
+# whole compiler; fat LTO on every one of them dominated `make check` wall
+# time and buys the tests nothing. Optimized (so the compiled-program tests
+# stay fast) but without LTO and with parallel codegen.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
