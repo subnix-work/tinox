@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "websocket-fuzz-driver"
 version = "0.1.0"
 description = "Local-only manifest so WsDriver.tnx can pull in the real tinox.core.websocket module as a dependency."
@@ -7,7 +7,7 @@ description = "Local-only manifest so WsDriver.tnx can pull in the real tinox.co
 [[dependencies]]
 group = "tinox.core"
 artifactId = "websocket"
-version = "1.1.12"
+version = "1.1.13"
 
 # Fuzz the in-tree source, not whatever happens to be published.
 [[overrides]]

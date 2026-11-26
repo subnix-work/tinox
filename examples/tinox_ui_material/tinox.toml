@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "tinox_ui_material"
 version = "0.1.0"
 description = "Material theme demo with cards, preferences, progress and dialogs."

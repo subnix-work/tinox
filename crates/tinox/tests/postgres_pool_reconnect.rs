@@ -37,7 +37,7 @@ fn pool_recovers_after_all_connections_were_terminated() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "postgres_pool_reconnect"
 version = "0.1.0"
 description = "pool reconnect fixture"
@@ -50,7 +50,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.11"
+version = "1.2.12"
 
 [[overrides]]
 group = "tinox.core"

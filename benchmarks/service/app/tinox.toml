@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.8"
+compiler = "2.9.9"
 name = "bench_service"
 version = "0.1.0"
 description = "Service workloads for tail-latency / RSS benchmarking (#312)"
@@ -7,12 +7,12 @@ description = "Service workloads for tail-latency / RSS benchmarking (#312)"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.12"
+version = "1.2.13"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.10"
+version = "1.1.11"
 
 [startup]
 banner = false
