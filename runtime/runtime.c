@@ -81,12 +81,22 @@ struct LocalBlock {
     max_align_t payload[];
 };
 
+typedef struct LocalSpan LocalSpan;
 typedef struct LocalThread LocalThread;
+enum { LOCAL_CACHE = 128, LOCAL_GATE_OBJECTS = 1024, LOCAL_GATE_BYTES = 65536 };
 struct LocalThread {
     LocalThread* next;
     pid_t tid;
     uintptr_t stack_lo, stack_hi, tls_lo, tls_hi, stopped_sp;
     _Atomic int state;
+    // Allocation fast path: while in_alloc is set the collector may not park this thread, because
+    // the owned span is in a transient state. A signal that arrives meanwhile sets deferred and
+    // the thread re-sends it to itself on leaving the section.
+    volatile sig_atomic_t in_alloc, deferred;
+    // Counters since the last fold into the global ones (written only by this thread; other
+    // threads read them for statistics). They are modular deltas: a free can precede the fold.
+    _Atomic size_t pend_count, pend_bytes, pend_total, pend_since, pend_trace, gate_objects;
+    LocalSpan* cache[LOCAL_CACHE];
 };
 enum { RUNNING, REQUESTED, STOPPED, RELEASED };
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(_Atomic int) == 4, "futex ABI");
@@ -102,6 +112,7 @@ static volatile unsigned char* fork_cookie;
 static pthread_key_t local_thread_key;
 static pthread_once_t local_init_once = PTHREAD_ONCE_INIT;
 static void local_init(void);
+static void local_retire(LocalThread* t);
 
 static void local_fatal(const char* message) {
     // May be called with other threads suspended inside libc.
@@ -130,6 +141,11 @@ static void local_suspend(int sig) {
     int saved_errno = errno;
     LocalThread* t = local_self;
     if (t && atomic_load(&t->state) == REQUESTED) {
+        if (t->in_alloc) {
+            t->deferred = 1;
+            errno = saved_errno;
+            return;
+        }
         // The kernel signal frame above this stack pointer contains the
         // interrupted register file, including SIMD state and the red zone.
         LOCAL_READ_SP(t->stopped_sp);
@@ -192,6 +208,7 @@ static void local_unregister(void* unused) {
     pthread_setspecific(local_thread_key, NULL);
     pthread_mutex_lock(&local_lock);
     LocalThread* t = local_self;
+    local_retire(t);
     LocalThread** slot = &local_threads;
     while (*slot != t)
         slot = &(*slot)->next;
@@ -238,8 +255,8 @@ enum {
     SLOT_MARK = 0x8000,
     NO_SLOT = UINT16_MAX
 };
-typedef struct LocalSpan LocalSpan;
 struct LocalSpan {
+    LocalThread* owner; // allocates from this span without the heap lock; NULL = shared
     uintptr_t base;
     LocalSpan *hash_next, *avail_next, **avail_link;
     uint64_t trace;
@@ -291,18 +308,39 @@ static LocalSpan* span_new(unsigned shift, uint64_t trace) {
     span_offer(s);
     return s;
 }
-static void* span_allocate(size_t n, uint64_t trace) {
-    unsigned shift = n <= 16 ? 4 : 32u - (unsigned)__builtin_clz((unsigned)n - 1);
+static unsigned span_shift(size_t n) { return n <= 16 ? 4 : 32u - (unsigned)__builtin_clz((unsigned)n - 1); }
+static unsigned cache_index(unsigned shift, uint64_t trace) {
+    uint64_t h = (trace ^ ((uint64_t)shift << 56)) * 0x9E3779B97F4A7C15ull;
+    return (unsigned)(h >> 57) & (LOCAL_CACHE - 1);
+}
+// Hand the span back to the shared pool.
+static void span_disown(LocalSpan* s) {
+    s->owner = NULL;
+    if (s->used < s->capacity) span_offer(s);
+}
+// Heap lock held. Replace the cache entry for (shift, trace) with a span of that class.
+static void span_claim(LocalThread* t, unsigned shift, uint64_t trace) {
+    unsigned idx = cache_index(shift, trace);
+    if (t->cache[idx]) {
+        span_disown(t->cache[idx]);
+        t->cache[idx] = NULL;
+    }
     LocalSpan* s = available[shift - 4];
     while (s && s->trace != trace)
         s = s->avail_next;
     if (!s) s = span_new(shift, trace);
+    span_withdraw(s);
+    s->owner = t;
+    t->cache[idx] = s;
+}
+// Only the owning thread, inside its in_alloc section, or the collector with every thread stopped.
+static void* span_take(LocalSpan* s, size_t n, unsigned shift) {
     unsigned i = s->free_head == NO_SLOT ? s->cursor++ : s->free_head;
     char* data = (char*)s->base + SPAN_GUARD + (i << shift);
     if (s->free_head != NO_SLOT) memcpy(&s->free_head, data, sizeof(s->free_head));
     if (n == (1u << shift)) s->has_full_width = true;
     s->sizes[i] = n;
-    if (++s->used == s->capacity) span_withdraw(s);
+    s->used++;
     memset(data, 0, n);
     return data;
 }
@@ -314,7 +352,7 @@ static void span_drop(LocalSpan* s, unsigned i) {
     char* p = (char*)s->base + SPAN_GUARD + (i << s->shift);
     memcpy(p, &s->free_head, sizeof(s->free_head));
     s->free_head = i;
-    if (s->used-- == s->capacity) span_offer(s);
+    if (s->used-- == s->capacity && !s->owner) span_offer(s);
 }
 static void span_release(LocalSpan* s) {
     if (s->avail_link) span_withdraw(s);
@@ -483,17 +521,49 @@ static void local_drop(LocalBlock* b) {
     free(b);
 }
 
+static size_t pend_get(const _Atomic size_t* v) { return atomic_load_explicit(v, memory_order_relaxed); }
+static void pend_add(_Atomic size_t* v, size_t d) { atomic_store_explicit(v, pend_get(v) + d, memory_order_relaxed); }
+// Heap lock held; the thread is the caller or is stopped. Move its counters into the global ones.
+static void local_fold(LocalThread* t) {
+    local_count += pend_get(&t->pend_count);
+    local_bytes += pend_get(&t->pend_bytes);
+    local_total += pend_get(&t->pend_total);
+    local_since += pend_get(&t->pend_since);
+    traceable_count += pend_get(&t->pend_trace);
+    atomic_store_explicit(&t->pend_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_bytes, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_total, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_since, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_trace, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->gate_objects, 0, memory_order_relaxed);
+}
+static void local_retire(LocalThread* t) {
+    for (unsigned i = 0; i < LOCAL_CACHE; i++) {
+        if (t->cache[i]) {
+            span_disown(t->cache[i]);
+            t->cache[i] = NULL;
+        }
+    }
+    local_fold(t);
+}
 // local_lock serializes allocation and thread membership throughout collection.
 // Prepare all scratch space before parking: a mutator may hold a libc lock.
 static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const ucontext_t* registers) {
-    if (!local_count) {
+    size_t threads = 0, pending = 0;
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        threads++;
+        pending += pend_get(&t->gate_objects);
+    }
+    if (!local_count && !pending) {
         local_collections++;
         local_since = 0;
         return;
     }
     LocalMark m = {.first = UINTPTR_MAX};
-    if (traceable_count) {
-        m.work = reallocarray(NULL, traceable_count, sizeof(*m.work));
+    // Running threads add at most LOCAL_GATE_OBJECTS objects each before they block on the lock.
+    size_t work_slots = traceable_count + threads * (LOCAL_GATE_OBJECTS + 8);
+    if (work_slots) {
+        m.work = reallocarray(NULL, work_slots, sizeof(*m.work));
         if (!m.work) local_fatal("tinox GC: mark stack allocation failed\n");
     }
     if (large_count) {
@@ -517,6 +587,8 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t != local_self) local_await(t, REQUESTED);
     }
+    for (LocalThread* t = local_threads; t; t = t->next)
+        local_retire(t);
     local_scan(&m, (uintptr_t)__data_start, (uintptr_t)_end);
     local_scan(&m, (uintptr_t)registers, (uintptr_t)(registers + 1));
     for (LocalThread* t = local_threads; t; t = t->next) {
@@ -581,33 +653,70 @@ static void local_lock_heap(void) {
     local_require_thread();
     pthread_mutex_lock(&local_lock);
 }
+// Re-send the deferred stop request to ourselves now that no span is in a transient state.
+static void local_park_deferred(LocalThread* t) {
+    t->deferred = 0;
+    if (syscall(SYS_tgkill, local_pid, t->tid, SIGUSR2)) local_fatal("tinox GC: cannot park thread\n");
+}
+// Heap lock held: fold this thread's counters, collect if the budget is spent, claim a span.
+static void local_refill(LocalThread* t, unsigned shift, uint64_t trace) {
+    local_fold(t);
+    if (local_since >= local_threshold) local_collect_locked();
+    span_claim(t, shift, trace);
+}
+static void* local_allocate_small(size_t n, uint64_t trace) {
+    local_require_thread();
+    LocalThread* t = local_self;
+    unsigned shift = span_shift(n);
+    unsigned idx = cache_index(shift, trace);
+    for (;;) {
+        // The cache entry is read inside the section: a collection that parked this thread
+        // before it could take the span may have released or reassigned it.
+        t->in_alloc = 1;
+        atomic_signal_fence(memory_order_seq_cst);
+        LocalSpan* s = t->cache[idx];
+        void* data = NULL;
+        if (s && s->shift == shift && s->trace == trace && s->used < s->capacity &&
+            pend_get(&t->gate_objects) < LOCAL_GATE_OBJECTS && pend_get(&t->pend_since) < LOCAL_GATE_BYTES) {
+            data = span_take(s, n, shift);
+            pend_add(&t->pend_count, 1);
+            pend_add(&t->pend_bytes, n);
+            pend_add(&t->pend_total, n);
+            pend_add(&t->pend_since, n);
+            pend_add(&t->gate_objects, 1);
+            if (trace) pend_add(&t->pend_trace, 1);
+        }
+        atomic_signal_fence(memory_order_seq_cst);
+        t->in_alloc = 0;
+        if (t->deferred) local_park_deferred(t);
+        if (data) return data;
+        pthread_mutex_lock(&local_lock);
+        local_refill(t, shift, trace);
+        pthread_mutex_unlock(&local_lock);
+    }
+}
 static void* local_allocate_trace(size_t n, uint64_t trace, bool permanent) {
     if (n > SIZE_MAX - sizeof(LocalBlock)) local_fatal("tinox GC: allocation size overflow\n");
     if (!n) n = 1;
+    if (n <= SMALL_LIMIT && !permanent) return local_allocate_small(n, trace);
     local_lock_heap();
     if (local_since >= local_threshold) local_collect_locked();
-    void* result;
-    if (n <= SMALL_LIMIT && !permanent) {
-        result = span_allocate(n, trace);
-    } else {
-        LocalBlock* b = calloc(1, sizeof(*b) + n);
-        if (!b) local_fatal("tinox GC: allocation failed\n");
-        b->size = n;
-        b->atomic = !trace;
-        b->permanent = permanent;
-        b->next = local_blocks;
-        if (local_blocks) local_blocks->prev = b;
-        local_blocks = b;
-        result = b->payload;
-        large_count++;
-    }
+    LocalBlock* b = calloc(1, sizeof(*b) + n);
+    if (!b) local_fatal("tinox GC: allocation failed\n");
+    b->size = n;
+    b->atomic = !trace;
+    b->permanent = permanent;
+    b->next = local_blocks;
+    if (local_blocks) local_blocks->prev = b;
+    local_blocks = b;
+    large_count++;
     local_count++;
     if (trace) traceable_count++;
     local_bytes += n;
     local_total += n;
     local_since += n;
     pthread_mutex_unlock(&local_lock);
-    return result;
+    return b->payload;
 }
 static void* local_allocate(size_t n, bool atomic, bool permanent) {
     return local_allocate_trace(n, atomic ? 0 : UINT64_MAX, permanent);
@@ -619,7 +728,21 @@ static void local_free(void* p) {
     if (!p) return;
     local_lock_heap();
     LocalSpan* s = span_find((uintptr_t)p);
-    if (s) {
+    if (s && s->owner) {
+        // Another thread allocates from this span without the lock: leave the object to the
+        // collector. Our own span can be updated directly; its counters are still pending.
+        LocalThread* t = local_self;
+        if (s->owner == t) {
+            unsigned i = ((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift;
+            pend_add(&t->pend_bytes, -(size_t)s->sizes[i]);
+            pend_add(&t->pend_count, -(size_t)1);
+            if (s->trace) pend_add(&t->pend_trace, -(size_t)1);
+            s->sizes[i] = 0;
+            memcpy((char*)s->base + SPAN_GUARD + (i << s->shift), &s->free_head, sizeof(s->free_head));
+            s->free_head = i;
+            s->used--;
+        }
+    } else if (s) {
         unsigned i = ((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift;
         span_drop(s, i);
         if (!s->used) span_release(s);
@@ -671,6 +794,12 @@ static void GC_gcollect(void) {
 static size_t local_stat(const size_t* counter) {
     local_lock_heap();
     size_t n = *counter;
+    // Threads count in their own cache until they fold; add what they have not published yet.
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        if (counter == &local_bytes) n += pend_get(&t->pend_bytes);
+        if (counter == &local_total) n += pend_get(&t->pend_total);
+        if (counter == &local_since) n += pend_get(&t->pend_since);
+    }
     pthread_mutex_unlock(&local_lock);
     return n;
 }

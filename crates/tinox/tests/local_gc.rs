@@ -66,3 +66,48 @@ fn rebuilding_the_same_output_switches_between_default_and_boehm() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// #723: small objects are allocated from thread-owned spans without the heap lock. Many threads
+/// allocating, freeing and being stopped by collections must see exactly what Boehm sees.
+#[test]
+fn threaded_allocation_matches_boehm_across_collections() {
+    let dir = std::env::temp_dir().join(format!("tinox-gc-threads-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/gc_stress/Main.tnx");
+    let mut exes = Vec::new();
+    for collector in ["tinox", "boehm"] {
+        let exe = dir.join(collector);
+        let build = Command::new(env!("CARGO_BIN_EXE_tinox"))
+            .env("TINOX_GC", collector)
+            .env_remove("TINOX_CFLAGS")
+            .args(["build"])
+            .arg(&source)
+            .args(["--release", "-o"])
+            .arg(&exe)
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        exes.push(exe);
+    }
+    let run = |exe: &Path, workload: &str, scale: &str, threads: &str| {
+        let out = Command::new("timeout")
+            .arg("60")
+            .arg(exe)
+            .env("WORKLOAD", workload)
+            .env("SCALE", scale)
+            .env("THREADS", threads)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{workload}/{threads}: {:?} {}", out.status, String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.split_whitespace().find(|f| f.starts_with("check=")).unwrap_or_default().to_string()
+    };
+    for (workload, scale, threads) in [("threads", "200000", "2"), ("threads", "200000", "8"), ("threads", "200000", "16"), ("mapchurn", "100000", "1")] {
+        for _ in 0..5 {
+            let tinox = run(&exes[0], workload, scale, threads);
+            assert!(!tinox.is_empty());
+            assert_eq!(tinox, run(&exes[1], workload, scale, threads), "{workload} with {threads} threads");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -67,6 +67,17 @@ request is rejected there.
   stacks, fork followed by managed execution, and native use of Boehm's API
   are outside this prototype's contract.
 
+## Thread-owned spans (#723)
+
+Small allocations (up to 512 bytes) are served from spans owned by the allocating thread, without
+the heap lock: each thread keeps a 128-entry cache keyed by size class and pointer mask. A thread
+takes the lock only to claim a span, to fold its counters (every 1,024 objects or 64 KiB) and for
+large or permanent allocations. A thread inside the allocation section defers the stop-the-world
+signal and re-sends it to itself when it leaves, so a collection never sees a half-updated span.
+At the start of every collection all caches are retired: spans return to the shared pool and the
+counters are folded. `GC_free` on an object in a span owned by another thread is left to the
+collector. See `benchmarks/gc_stress` for the thread-scaling measurements.
+
 ## Counters
 
 Debug::gcAllocatedBytes() counts cumulative requested payload bytes (minimum
