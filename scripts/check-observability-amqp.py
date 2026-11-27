@@ -144,7 +144,7 @@ def main():
                 (app / "Main.tnx").write_text(MAIN)
                 (app / "C10.tnx").write_text(C10.replace("__PORT__", str(amqp)).replace("__DEP__", str(dependency.server_port)))
                 (app / "C091.tnx").write_text(C091.replace("__PORT__", str(amqp)).replace("__DEP__", str(dependency.server_port)))
-                tinox = ROOT / "target/release/tinox"
+                tinox = Path(os.environ.get("TINOX_BIN") or ROOT / "target/release/tinox")
                 override = f'\n[[overrides]]\ngroup = "tinox.core"\nartifactId = "%s"\npath = "{ROOT}/crates/tinox-core-ext/%s"\n'
                 with open(app / "tinox.toml", "a") as f:
                     f.write(override % ("amqp10", "amqp10") + override % ("amqp091", "amqp091"))

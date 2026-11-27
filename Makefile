@@ -66,8 +66,8 @@ workspace-ext:
 # Dogfood: build examples/ + benchmarks/, build and test jgrep/ygrep
 # (jgrep checkout configurable via DOGFOOD_DIR)
 dogfood:
-	cargo build --release
-	bash scripts/dogfood.sh
+	cargo build --profile ci --workspace
+	TINOX_BIN=$(CURDIR)/target/ci/tinox bash scripts/dogfood.sh
 
 # Sanitizer run (TESTPLAN 2.3): e2e suite with the AddressSanitizer runtime.
 # Plain malloc instead of Boehm-GC (-DTINOX_NO_GC), so ASan sees every
@@ -242,9 +242,9 @@ docs-generate:
 	python3 scripts/reference.py generate
 
 docs-check:
-	cargo build --release -p tinox
+	cargo build --profile ci -p tinox
 	python3 -m unittest discover -s tests -p '*_test.py'
-	python3 scripts/reference.py check
+	python3 scripts/reference.py check --tinox target/ci/tinox
 
 docs-stage:
 	cargo build --release -p tinox

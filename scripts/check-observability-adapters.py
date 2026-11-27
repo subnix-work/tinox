@@ -105,7 +105,7 @@ def main():
             (app / "tinox.toml").write_text(TOML)
             (app / "Main.tnx").write_text(MAIN)
             (app / "EchoEndpoint.tnx").write_text(ENDPOINT.replace("__WSPORT__", str(ws_port)).replace("__DEPPORT__", str(dependency.server_port)))
-            tinox = ROOT / "target/release/tinox"
+            tinox = Path(os.environ.get("TINOX_BIN") or ROOT / "target/release/tinox")
             subprocess.run([str(tinox), "install"], cwd=app, check=True, capture_output=True)
             subprocess.run([str(tinox), "build", "Main.tnx", "-o", "wsobs"], cwd=app, check=True, capture_output=True)
             subprocess.run(["docker", "run", "-d", "--name", name, "-p", "127.0.0.1:0:4318",
