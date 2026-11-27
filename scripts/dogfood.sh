@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dogfood gate (TESTPLAN Phase 3): build examples/ + benchmarks/ (with
 # smoke runs where deterministic) and build + run jgrep-tinox's tests.
-# Invoked via `make dogfood`; expects a fresh target/release/tinox.
+# Invoked via `make dogfood`; expects a fresh compiler (TINOX_BIN, default target/release/tinox).
 #
 # All jobs are independent of each other (each its own tinox process, its
 # own output path) and therefore run in parallel in the background; only
@@ -13,7 +13,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-TINOX="$PWD/target/release/tinox"
+TINOX="${TINOX_BIN:-$PWD/target/release/tinox}"
 DOGFOOD_DIR="${DOGFOOD_DIR:-../jgrep-tinox}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT

@@ -6,6 +6,7 @@ fn run(script: &str) {
     let output = std::process::Command::new("timeout")
         .args(["600", "python3"])
         .arg(root.join("scripts").join(script))
+        .env("TINOX_BIN", env!("CARGO_BIN_EXE_tinox"))
         .output()
         .expect("run collector interoperability check");
     assert!(
