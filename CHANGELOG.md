@@ -4,6 +4,22 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.10] - 2026-11-28
+
+**Notable change:** the Tinox garbage collector is much faster with many threads and large live heaps. Every package is republished for compiler 2.9.10 (patch version bump).
+
+### Changed
+
+- Small objects are allocated from thread-owned 64 KiB spans without the global heap lock (#723). Marking prefetches and, for heaps of 8 MiB and more, runs on up to four helper threads (#726; `TINOX_GC_MARKERS=N` overrides, `1` is serial). Slabs come from an `mmap` pool and the collector uses one malloc arena unless `MALLOC_ARENA_MAX` is set, which cuts peak RSS with 16 threads from about 84 MiB to 24 MiB. Measurements: `benchmarks/gc_stress/README.md`.
+
+### Fixed
+
+- A large allocation could be freed by a collection that started right as the pointer was returned, because the compiler kept only the block header pointer, which the mark does not recognise (#727).
+
+### Internal
+
+- `make test` dogfood and docs checks use the `ci` profile. New `local_gc` stress tests for parallel marking and the large-block race, and a GC stress benchmark with a Boehm comparison.
+
 ## [2.9.9] - 2026-11-26
 
 **Notable change:** native builds now use the Tinox garbage collector by default instead of Boehm (#712). Every package is republished for compiler 2.9.9 (patch version bump; a package declaring `compiler = "2.9.8"` is rejected by 2.9.9). **Existing projects need attention only if** native C code linked through `[native]` uses Boehm's `GC_*` API directly: build it with `TINOX_GC=boehm`, or allocate through `tinox_alloc` from `runtime.h`.

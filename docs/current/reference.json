@@ -1146,7 +1146,7 @@
     "zipListEntries": "(path: String) -> Array",
     "zipRemoveFile": "(path: String) -> Nothing"
   },
-  "compiler_version": "2.9.9",
+  "compiler_version": "2.9.10",
   "schema_version": 1,
   "sources": {}
 }

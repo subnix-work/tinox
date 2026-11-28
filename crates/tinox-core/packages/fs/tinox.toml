@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.9"
+compiler = "2.9.10"
 name = "fs"
-version = "1.1.10"
+version = "1.1.11"
 description = "tinox.core.fs, bundled with the compiler and also available as a standalone tinox-central package."

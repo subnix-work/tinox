@@ -87,7 +87,7 @@ fn project(name: &str) -> PathBuf {
     std::fs::write(
         d.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.9\"\nname = \"ffi_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\n",
+            "[package]\ncompiler = \"2.9.10\"\nname = \"ffi_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\n",
             env!("CARGO_PKG_VERSION")
         ),
     )

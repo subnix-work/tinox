@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.9"
+compiler = "2.9.10"
 name = "websocket"
-version = "1.1.13"
+version = "1.1.14"
 description = "tinox.core.websocket, split out of the bundled stdlib as a standalone tinox-central package."
