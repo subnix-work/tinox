@@ -105,7 +105,7 @@ static LocalThread* local_threads;
 static LocalBlock* local_blocks;
 static pthread_mutex_t local_lock = PTHREAD_MUTEX_INITIALIZER;
 static size_t local_count, local_bytes, local_total, local_since, local_collections, local_swept;
-enum { LOCAL_MIN_BUDGET = 1024 * 1024, LOCAL_PARALLEL_BYTES = 32 * 1024 * 1024 };
+enum { LOCAL_MIN_BUDGET = 1024 * 1024, LOCAL_PARALLEL_BYTES = 8 * 1024 * 1024 };
 static size_t local_threshold = LOCAL_MIN_BUDGET;
 static pid_t local_pid;
 static volatile unsigned char* fork_cookie;
