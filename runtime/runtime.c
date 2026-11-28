@@ -715,8 +715,12 @@ static void* local_allocate_trace(size_t n, uint64_t trace, bool permanent) {
     local_bytes += n;
     local_total += n;
     local_since += n;
+    // Once the lock is released a collection can start at any instruction. The compiler would keep
+    // `b`, the block header below the payload, live across the unlock, and the collector only
+    // recognises pointers into the payload. The payload pointer itself must be what is live here.
+    void* volatile result = b->payload;
     pthread_mutex_unlock(&local_lock);
-    return b->payload;
+    return result;
 }
 static void* local_allocate(size_t n, bool atomic, bool permanent) {
     return local_allocate_trace(n, atomic ? 0 : UINT64_MAX, permanent);
