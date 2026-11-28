@@ -34,7 +34,7 @@ fn generate_cli_and_apply_sqlite_schema() {
         root.join("tinox.toml"),
         r#"
 [package]
-compiler = "2.9.9"
+compiler = "2.9.10"
 name = "entity-test"
 version = "0.1.0"
 [database]

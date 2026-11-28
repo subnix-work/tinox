@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.9"
+compiler = "2.9.10"
 name = "tinox_ui_material"
 version = "0.1.0"
 description = "Material theme demo with cards, preferences, progress and dialogs."
@@ -7,22 +7,22 @@ description = "Material theme demo with cards, preferences, progress and dialogs
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.1.14"
+version = "1.1.15"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.13"
+version = "1.2.14"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "websocket"
-version = "1.1.13"
+version = "1.1.14"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.11"
+version = "1.1.12"
 
 # Use the new theme implementation directly from this checkout.
 [[overrides]]
