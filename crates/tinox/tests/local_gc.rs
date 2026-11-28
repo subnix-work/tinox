@@ -69,9 +69,9 @@ fn rebuilding_the_same_output_switches_between_default_and_boehm() {
 
 /// #723: small objects are allocated from thread-owned spans without the heap lock. Many threads
 /// allocating, freeing and being stopped by collections must see exactly what Boehm sees.
-#[test]
-fn threaded_allocation_matches_boehm_across_collections() {
-    let dir = std::env::temp_dir().join(format!("tinox-gc-threads-{}", std::process::id()));
+/// Builds benchmarks/gc_stress/Main.tnx with both collectors: [tinox, boehm].
+fn build_stress(tag: &str) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+    let dir = std::env::temp_dir().join(format!("tinox-gc-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/gc_stress/Main.tnx");
     let mut exes = Vec::new();
@@ -89,24 +89,58 @@ fn threaded_allocation_matches_boehm_across_collections() {
         assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
         exes.push(exe);
     }
-    let run = |exe: &Path, workload: &str, scale: &str, threads: &str| {
-        let out = Command::new("timeout")
-            .arg("60")
-            .arg(exe)
-            .env("WORKLOAD", workload)
-            .env("SCALE", scale)
-            .env("THREADS", threads)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{workload}/{threads}: {:?} {}", out.status, String::from_utf8_lossy(&out.stderr));
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.split_whitespace().find(|f| f.starts_with("check=")).unwrap_or_default().to_string()
-    };
+    (dir, exes)
+}
+
+/// Runs one workload; returns its `check=` value.
+fn run_stress(exe: &Path, workload: &str, scale: &str, threads: &str, markers: Option<&str>) -> String {
+    let mut cmd = Command::new("timeout");
+    cmd.arg("120").arg(exe).env("WORKLOAD", workload).env("SCALE", scale).env("THREADS", threads);
+    if let Some(m) = markers {
+        cmd.env("TINOX_GC_MARKERS", m);
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{workload}/{threads}: {:?} {}", out.status, String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.split_whitespace().find(|f| f.starts_with("check=")).unwrap_or_default().to_string()
+}
+
+/// #723: small objects are allocated from thread-owned spans without the heap lock. Many threads
+/// allocating, freeing and being stopped by collections must see exactly what Boehm sees.
+#[test]
+fn threaded_allocation_matches_boehm_across_collections() {
+    let (dir, exes) = build_stress("threads");
     for (workload, scale, threads) in [("threads", "200000", "2"), ("threads", "200000", "8"), ("threads", "200000", "16"), ("mapchurn", "100000", "1")] {
         for _ in 0..5 {
-            let tinox = run(&exes[0], workload, scale, threads);
+            let tinox = run_stress(&exes[0], workload, scale, threads, None);
             assert!(!tinox.is_empty());
-            assert_eq!(tinox, run(&exes[1], workload, scale, threads), "{workload} with {threads} threads");
+            assert_eq!(tinox, run_stress(&exes[1], workload, scale, threads, None), "{workload} with {threads} threads");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// #726: a live heap of several tens of MiB is marked by a pool of helper threads. Whatever the
+/// number of markers, every live object must survive: the checksum is read back after the collections.
+#[test]
+fn parallel_marking_keeps_every_live_object() {
+    let (dir, exes) = build_stress("markers");
+    for workload in ["liveheap", "trees"] {
+        let scale = if workload == "liveheap" { "400000" } else { "16" };
+        let expected = run_stress(&exes[1], workload, scale, "1", None);
+        assert!(!expected.is_empty());
+        for markers in ["1", "2", "4", "8"] {
+            for _ in 0..3 {
+                assert_eq!(expected, run_stress(&exes[0], workload, scale, "1", Some(markers)), "{workload} with {markers} markers");
+            }
+        }
+    }
+    // Several mutators, each with its own live heap, are stopped while helpers mark.
+    for threads in ["2", "4"] {
+        let expected = run_stress(&exes[1], "liveheap-threads", "200000", threads, None);
+        assert!(!expected.is_empty());
+        for _ in 0..3 {
+            assert_eq!(expected, run_stress(&exes[0], "liveheap-threads", "200000", threads, Some("4")), "{threads} mutator threads");
         }
     }
     std::fs::remove_dir_all(dir).unwrap();

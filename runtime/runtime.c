@@ -105,7 +105,7 @@ static LocalThread* local_threads;
 static LocalBlock* local_blocks;
 static pthread_mutex_t local_lock = PTHREAD_MUTEX_INITIALIZER;
 static size_t local_count, local_bytes, local_total, local_since, local_collections, local_swept;
-enum { LOCAL_MIN_BUDGET = 1024 * 1024 };
+enum { LOCAL_MIN_BUDGET = 1024 * 1024, LOCAL_PARALLEL_BYTES = 32 * 1024 * 1024 };
 static size_t local_threshold = LOCAL_MIN_BUDGET;
 static pid_t local_pid;
 static volatile unsigned char* fork_cookie;
@@ -248,7 +248,7 @@ static void local_init(void) {
 // pointers. Only descriptors, outside the managed payloads, enter the index.
 enum {
     SPAN_BYTES = 65536,
-    SPAN_BUCKETS = 1024,
+    SPAN_BUCKETS = 32768,
     SPAN_GUARD = 16,
     SMALL_CLASSES = 6,
     SMALL_LIMIT = 512,
@@ -400,27 +400,110 @@ typedef struct {
     size_t size;
     uint64_t trace;
 } LocalWork;
+// Parallel marking: the participants share one stack (the collector's own mark stack) and keep
+// a small private one each. Mark bits are then set with atomic operations.
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    LocalWork* work;
+    size_t pending;
+    unsigned parts, idle;
+    _Atomic unsigned waiting;
+    bool done;
+    // Polled by idle participants; alone on its cache line so polling does not slow the lock.
+    _Alignas(64) _Atomic unsigned epoch;
+    char pad[60];
+} MarkShared;
 typedef struct {
     LocalBlock** sorted;
     LocalWork* work;
     size_t pending;
     uintptr_t first, last;
+    MarkShared* shared; // NULL: this marker runs alone
 } LocalMark;
+enum { MARK_LOCAL = 2048, MARK_RING = 16, MARK_CHUNK = 2048, MARK_TAKE = 256, MARK_SPIN = 4000, MARK_MAX_THREADS = 4 };
+// Mark stack space must never run out: every traceable object is pushed at most once.
+static void mark_donate(LocalMark* m, size_t keep) {
+    MarkShared* sh = m->shared;
+    size_t give = m->pending - keep;
+    pthread_mutex_lock(&sh->mu);
+    memcpy(sh->work + sh->pending, m->work, give * sizeof(*m->work));
+    sh->pending += give;
+    atomic_fetch_add_explicit(&sh->epoch, 1, memory_order_release);
+    if (atomic_load_explicit(&sh->waiting, memory_order_relaxed)) pthread_cond_broadcast(&sh->cv);
+    pthread_mutex_unlock(&sh->mu);
+    memmove(m->work, m->work + give, keep * sizeof(*m->work));
+    m->pending = keep;
+}
+static inline void mark_push(LocalMark* m, LocalWork w) {
+    if (m->shared && m->pending == MARK_LOCAL) mark_donate(m, MARK_LOCAL / 2);
+    m->work[m->pending++] = w;
+}
+// Own stack and ring are empty: take work from the shared stack, or learn that all are done.
+static bool mark_refill(LocalMark* m) {
+    MarkShared* sh = m->shared;
+    pthread_mutex_lock(&sh->mu);
+    for (;;) {
+        if (sh->pending) {
+            size_t k = sh->pending < MARK_TAKE ? sh->pending : MARK_TAKE;
+            sh->pending -= k;
+            memcpy(m->work, sh->work + sh->pending, k * sizeof(*m->work));
+            m->pending = k;
+            pthread_mutex_unlock(&sh->mu);
+            return true;
+        }
+        if (++sh->idle == sh->parts) {
+            sh->done = true;
+            atomic_fetch_add_explicit(&sh->epoch, 1, memory_order_release);
+            pthread_cond_broadcast(&sh->cv);
+            pthread_mutex_unlock(&sh->mu);
+            return false;
+        }
+        // Other participants are usually about to donate: poll briefly before sleeping.
+        atomic_fetch_add_explicit(&sh->waiting, 1, memory_order_relaxed);
+        unsigned seen = atomic_load_explicit(&sh->epoch, memory_order_relaxed);
+        pthread_mutex_unlock(&sh->mu);
+        for (int spin = 0; spin < MARK_SPIN; spin++) {
+            if (atomic_load_explicit(&sh->epoch, memory_order_acquire) != seen) break;
+#if defined(__x86_64__)
+            __builtin_ia32_pause();
+#else
+            __asm__ volatile("yield");
+#endif
+        }
+        pthread_mutex_lock(&sh->mu);
+        while (!sh->pending && !sh->done)
+            pthread_cond_wait(&sh->cv, &sh->mu);
+        atomic_fetch_sub_explicit(&sh->waiting, 1, memory_order_relaxed);
+        if (sh->done) {
+            pthread_mutex_unlock(&sh->mu);
+            return false;
+        }
+        sh->idle--;
+    }
+}
 static int local_order(const void* a, const void* b) {
     uintptr_t x = (uintptr_t)*(LocalBlock* const*)a, y = (uintptr_t)*(LocalBlock* const*)b;
     return (x > y) - (x < y);
 }
 static void local_mark(LocalMark* m, LocalBlock* b) {
-    if (b->marked) return;
-    b->marked = true;
-    if (!b->atomic) m->work[m->pending++] = (LocalWork){(uintptr_t)b->payload, b->size, UINT64_MAX};
+    if (__atomic_load_n(&b->marked, __ATOMIC_RELAXED)) return;
+    if (m->shared) {
+        if (__atomic_exchange_n(&b->marked, true, __ATOMIC_RELAXED)) return;
+    } else {
+        b->marked = true;
+    }
+    if (!b->atomic) mark_push(m, (LocalWork){(uintptr_t)b->payload, b->size, UINT64_MAX});
 }
 static void span_mark(LocalMark* m, LocalSpan* s, unsigned i, unsigned offset) {
-    unsigned n = s->sizes[i];
+    unsigned n = __atomic_load_n(&s->sizes[i], __ATOMIC_RELAXED);
     if (!n || (n & SLOT_MARK) || offset > n) return;
-    s->sizes[i] |= SLOT_MARK;
-    if (s->trace)
-        m->work[m->pending++] = (LocalWork){s->base + SPAN_GUARD + (i << s->shift), n, s->trace};
+    if (m->shared) {
+        if (__atomic_fetch_or(&s->sizes[i], SLOT_MARK, __ATOMIC_RELAXED) & SLOT_MARK) return;
+    } else {
+        s->sizes[i] |= SLOT_MARK;
+    }
+    if (s->trace) mark_push(m, (LocalWork){s->base + SPAN_GUARD + (i << s->shift), n, s->trace});
 }
 static inline void span_visit(LocalMark* m, LocalSpan* s, uintptr_t word) {
     unsigned pos = word & (SPAN_BYTES - 1);
@@ -457,7 +540,7 @@ static void local_visit(LocalMark* m, uintptr_t word) {
 // objects can be marked in bulk. The caller already checked the first word
 // and its possible one-past predecessor. All subsequent predecessors are in
 // the run. A vacant slot stays vacant even if an integer names its address.
-static uintptr_t span_mark_run(LocalSpan* s, uintptr_t first, uintptr_t lo, uintptr_t hi) {
+static uintptr_t span_mark_run(LocalMark* m, LocalSpan* s, uintptr_t first, uintptr_t lo, uintptr_t hi) {
     unsigned stride = 1u << s->shift;
     uintptr_t offset = first - (s->base + SPAN_GUARD);
     if ((offset & (stride - 1)) || (offset >> s->shift) >= s->cursor) return lo;
@@ -472,7 +555,11 @@ static uintptr_t span_mark_run(LocalSpan* s, uintptr_t first, uintptr_t lo, uint
         lo += sizeof(next);
     }
     for (; i < end; i++) {
-        if (s->sizes[i]) s->sizes[i] |= SLOT_MARK;
+        if (!s->sizes[i]) continue;
+        if (m->shared)
+            __atomic_fetch_or(&s->sizes[i], SLOT_MARK, __ATOMIC_RELAXED);
+        else
+            s->sizes[i] |= SLOT_MARK;
     }
     return lo;
 }
@@ -496,7 +583,7 @@ static void local_scan(LocalMark* m, uintptr_t lo, uintptr_t hi) {
             memcpy(&next, (const void*)lo, sizeof(next));
             if ((next ^ s->base) >= SPAN_BYTES) break;
             if (!s->trace && next - word == (1u << s->shift)) {
-                lo = span_mark_run(s, word, lo, hi);
+                lo = span_mark_run(m, s, word, lo, hi);
                 if (lo == hi) return;
                 memcpy(&next, (const void*)lo, sizeof(next));
                 if ((next ^ s->base) >= SPAN_BYTES) break;
@@ -546,6 +633,158 @@ static void local_retire(LocalThread* t) {
     }
     local_fold(t);
 }
+// Scan one object, or one chunk of a big conservative range.
+static void mark_scan(LocalMark* m, LocalWork w) {
+    if (w.trace == UINT64_MAX) {
+        local_scan(m, w.base, w.base + w.size);
+        return;
+    }
+    uintptr_t words[64];
+    unsigned nw = 0;
+    for (uint64_t bits = w.trace; bits; bits &= bits - 1) {
+        uintptr_t word;
+        memcpy(&word, (const void*)(w.base + __builtin_ctzll(bits) * sizeof(word)), sizeof(word));
+        words[nw++] = word;
+        if (word < SPAN_BYTES) continue;
+        // Fetch the slot metadata while the other children are being looked up.
+        LocalSpan* s = span_find(word);
+        unsigned pos = word & (SPAN_BYTES - 1);
+        if (s && pos >= SPAN_GUARD) __builtin_prefetch(&s->sizes[(pos - SPAN_GUARD) >> s->shift]);
+    }
+    for (unsigned k = 0; k < nw; k++)
+        local_visit(m, words[k]);
+}
+// Drain the mark stack. Popped objects wait in a short ring after a prefetch, so their
+// payload is in cache when they are scanned. Marking order is irrelevant.
+static void mark_drain(LocalMark* m) {
+    LocalWork ring[MARK_RING];
+    unsigned head = 0, fill = 0;
+    for (;;) {
+        while (fill < MARK_RING && m->pending) {
+            LocalWork q = m->work[--m->pending];
+            __builtin_prefetch((const void*)q.base);
+            if (q.size > 64) __builtin_prefetch((const void*)(q.base + 64));
+            ring[(head + fill++) % MARK_RING] = q;
+        }
+        if (!fill) {
+            if (m->shared && mark_refill(m)) continue;
+            return;
+        }
+        LocalWork w = ring[head];
+        head = (head + 1) % MARK_RING;
+        fill--;
+        if (m->shared) {
+            // Cut big ranges into pieces others can take, and feed idle participants.
+            if (w.trace == UINT64_MAX && w.size > MARK_CHUNK) {
+                mark_push(m, (LocalWork){w.base + MARK_CHUNK, w.size - MARK_CHUNK, w.trace});
+                w.size = MARK_CHUNK;
+            }
+            if (m->pending > 32 && atomic_load_explicit(&m->shared->waiting, memory_order_relaxed) &&
+                !__atomic_load_n(&m->shared->pending, __ATOMIC_RELAXED))
+                mark_donate(m, m->pending / 2);
+        }
+        mark_scan(m, w);
+    }
+}
+static void mark_participate(const LocalMark* base) {
+    LocalWork stack[MARK_LOCAL];
+    LocalMark m = *base;
+    m.work = stack;
+    m.pending = 0;
+    mark_drain(&m);
+}
+
+// Persistent markers. They are created before the world is stopped, because a parked mutator
+// may hold a libc lock that pthread_create needs. They never allocate while marking.
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t job_cv, done_cv;
+    unsigned workers, generation, finished;
+    const LocalMark* job;
+    MarkShared sh;
+    bool ready;
+} mark_pool = {.mu = PTHREAD_MUTEX_INITIALIZER,
+               .job_cv = PTHREAD_COND_INITIALIZER,
+               .done_cv = PTHREAD_COND_INITIALIZER,
+               .sh = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER}};
+static int tinox_gc_cpus(void);
+static void* mark_worker(void* arg) {
+    (void)arg;
+    unsigned seen = 0;
+    for (;;) {
+        pthread_mutex_lock(&mark_pool.mu);
+        while (mark_pool.generation == seen)
+            pthread_cond_wait(&mark_pool.job_cv, &mark_pool.mu);
+        seen = mark_pool.generation;
+        const LocalMark* job = mark_pool.job;
+        pthread_mutex_unlock(&mark_pool.mu);
+        mark_participate(job);
+        pthread_mutex_lock(&mark_pool.mu);
+        if (++mark_pool.finished == mark_pool.workers) pthread_cond_signal(&mark_pool.done_cv);
+        pthread_mutex_unlock(&mark_pool.mu);
+    }
+    return NULL;
+}
+// Heap lock held, mutators still running. Returns the number of helper threads (0 = mark alone).
+static unsigned mark_pool_prepare(void) {
+    if (mark_pool.ready) return mark_pool.workers;
+    mark_pool.ready = true;
+    long total = tinox_gc_cpus();
+    const char* ov = getenv("TINOX_GC_MARKERS");
+    if (ov && *ov) {
+        char* end;
+        long v = strtol(ov, &end, 10);
+        if (*end || v < 1 || v > 64) local_fatal("tinox GC: TINOX_GC_MARKERS must be 1..64\n");
+        total = v;
+    } else if (total > MARK_MAX_THREADS) {
+        total = MARK_MAX_THREADS;
+    }
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 512 * 1024);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    unsigned made = 0;
+    for (long i = 1; i < total; i++) {
+        pthread_t tid;
+        if (pthread_create(&tid, &attr, mark_worker, NULL)) break;
+        made++;
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    pthread_attr_destroy(&attr);
+    mark_pool.workers = made;
+    return made;
+}
+// Mark everything reachable from the work already on `m`, using the helpers when there are any.
+static void mark_all(LocalMark* m, unsigned workers) {
+    if (!workers) {
+        mark_drain(m);
+        return;
+    }
+    MarkShared* sh = &mark_pool.sh;
+    sh->work = m->work;
+    sh->pending = m->pending;
+    sh->parts = workers + 1;
+    sh->idle = 0;
+    sh->done = false;
+    atomic_store(&sh->waiting, 0);
+    m->shared = sh;
+    m->pending = 0;
+    pthread_mutex_lock(&mark_pool.mu);
+    mark_pool.job = m;
+    mark_pool.finished = 0;
+    mark_pool.generation++;
+    pthread_cond_broadcast(&mark_pool.job_cv);
+    pthread_mutex_unlock(&mark_pool.mu);
+    mark_participate(m);
+    pthread_mutex_lock(&mark_pool.mu);
+    while (mark_pool.finished != workers)
+        pthread_cond_wait(&mark_pool.done_cv, &mark_pool.mu);
+    pthread_mutex_unlock(&mark_pool.mu);
+    m->shared = NULL;
+}
 // local_lock serializes allocation and thread membership throughout collection.
 // Prepare all scratch space before parking: a mutator may hold a libc lock.
 static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const ucontext_t* registers) {
@@ -560,6 +799,7 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
         return;
     }
     LocalMark m = {.first = UINTPTR_MAX};
+    unsigned workers = local_bytes >= LOCAL_PARALLEL_BYTES ? mark_pool_prepare() : 0;
     // Running threads add at most LOCAL_GATE_OBJECTS objects each before they block on the lock.
     size_t work_slots = traceable_count + threads * (LOCAL_GATE_OBJECTS + 8);
     if (work_slots) {
@@ -600,19 +840,7 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     }
     for (size_t i = 0; i < large_count; i++)
         if (m.sorted[i]->permanent) local_mark(&m, m.sorted[i]);
-    while (m.pending) {
-        LocalWork w = m.work[--m.pending];
-        if (w.trace == UINT64_MAX) {
-            local_scan(&m, w.base, w.base + w.size);
-        } else {
-            for (uint64_t bits = w.trace; bits; bits &= bits - 1) {
-                uintptr_t word;
-                memcpy(&word, (const void*)(w.base + __builtin_ctzll(bits) * sizeof(word)),
-                       sizeof(word));
-                local_visit(&m, word);
-            }
-        }
-    }
+    mark_all(&m, workers);
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t == local_self) continue;
         atomic_store(&t->state, RELEASED);
@@ -2662,6 +2890,9 @@ static const TinoxLimits* tinox_limits(void) {
     pthread_once(&g_limits_once, tinox_limits_init_once);
     return &g_limits;
 }
+
+// CPUs the process may use (affinity, cgroup quota, TINOX_CPUS); sizes the collector's marker pool.
+__attribute__((unused)) static int tinox_gc_cpus(void) { return (int)tinox_limits()->cpus; }
 
 // Reserves one slot in a counter bounded by `max`; 0 when exhausted.
 static int tinox_budget_acquire(atomic_llong* active, atomic_llong* peak, int64_t max) {

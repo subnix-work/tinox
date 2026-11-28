@@ -28,6 +28,27 @@ for the constant-total-work churn workload (Tinox / Boehm):
 | 8 | 9.5 s / 0.65 s | 0.61 s / 0.68 s |
 | 16 | 17.9 s / 0.88 s | 0.57 s / 1.14 s |
 
-Known gaps: a 2M-object live heap still shows a collection stall of about 360 ms (Boehm 31-104 ms),
-`trees`/`fragment` have 2-4x Boehm's p99 stall, and peak RSS with 16 threads is higher (each thread
-keeps partially filled spans).
+## Parallel marking (#726)
+
+A collection spent 330-510 ms marking the 2M-object live heap (about 9M objects, ~55 ns each, one
+cache miss per object) and only ~40 ms sweeping. Three changes, measured on the same machine
+(`results-after-726.json`, full scale, three runs, CPUs 0-15):
+
+- The mark loop prefetches: popped objects wait in a 16-entry ring, and the slot metadata of an
+  object's children is fetched before they are looked up.
+- The span index had 1024 buckets and chains of ~6 descriptors for a 370 MiB heap; it has 32768.
+  Together with the prefetching this halves a single-threaded mark (500 -> 255 ms).
+- Heaps of 32 MiB and more are marked by up to 4 threads (`TINOX_GC_MARKERS=N` overrides, 1 = mark
+  alone; more than 4 gave no further gain on this machine). The helpers are created before the world
+  is stopped, because a parked mutator may hold a libc lock that `pthread_create` needs. Mark bits
+  are set atomically, work is shared through the collector's mark stack in chunks, and big
+  conservative ranges are split so every participant gets a share.
+
+| liveheap-2M | Before | After | Boehm |
+|---|---:|---:|---:|
+| wall | 2772 ms | 1521 ms | 1317 ms |
+| max stall | 523 ms | 166 ms | 149 ms |
+| peak RSS | 667 MiB | 583 MiB | 479 MiB |
+
+Known gaps: `trees`/`fragment` have 2-4x Boehm's max stall (small heaps are still marked by one
+thread), and peak RSS with 16 threads is higher (each thread keeps partially filled spans).
