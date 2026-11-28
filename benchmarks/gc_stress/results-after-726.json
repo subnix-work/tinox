@@ -1,0 +1,930 @@
+{
+ "cpus": "0-15",
+ "runs": 3,
+ "results": {
+  "churn": {
+   "tinox": [
+    {
+     "cpu_s": 2.69,
+     "rss_mib": 13.8,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2695,
+     "collections": 5572,
+     "lat_p50_us": 16,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 353,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 2.79,
+     "rss_mib": 13.3,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2799,
+     "collections": 5572,
+     "lat_p50_us": 16,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 437,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 2.73,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2740,
+     "collections": 5572,
+     "lat_p50_us": 16,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 436,
+     "check": 988601007
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 9.37,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 3621,
+     "collections": 11714,
+     "lat_p50_us": 32,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 1079,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 6.44,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 3265,
+     "collections": 11714,
+     "lat_p50_us": 16,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 1053,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 8.71,
+     "rss_mib": 14.4,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 3482,
+     "collections": 11714,
+     "lat_p50_us": 16,
+     "lat_p99_us": 128,
+     "lat_p999_us": 128,
+     "lat_max_us": 1445,
+     "check": 988601007
+    }
+   ]
+  },
+  "trees": {
+   "tinox": [
+    {
+     "cpu_s": 0.3,
+     "rss_mib": 53.9,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 293,
+     "collections": 31,
+     "lat_p50_us": 256,
+     "lat_p99_us": 4096,
+     "lat_p999_us": 4096,
+     "lat_max_us": 6687,
+     "check": 157898270
+    },
+    {
+     "cpu_s": 0.28,
+     "rss_mib": 56.0,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 278,
+     "collections": 31,
+     "lat_p50_us": 256,
+     "lat_p99_us": 4096,
+     "lat_p999_us": 4096,
+     "lat_max_us": 5997,
+     "check": 157898270
+    },
+    {
+     "cpu_s": 0.29,
+     "rss_mib": 54.2,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 289,
+     "collections": 31,
+     "lat_p50_us": 256,
+     "lat_p99_us": 4096,
+     "lat_p999_us": 4096,
+     "lat_max_us": 6807,
+     "check": 157898270
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 0.37,
+     "rss_mib": 43.8,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 175,
+     "collections": 32,
+     "lat_p50_us": 256,
+     "lat_p99_us": 1024,
+     "lat_p999_us": 1024,
+     "lat_max_us": 1618,
+     "check": 157898270
+    },
+    {
+     "cpu_s": 0.35,
+     "rss_mib": 44.3,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 180,
+     "collections": 32,
+     "lat_p50_us": 256,
+     "lat_p99_us": 1024,
+     "lat_p999_us": 1024,
+     "lat_max_us": 1779,
+     "check": 157898270
+    },
+    {
+     "cpu_s": 0.37,
+     "rss_mib": 44.1,
+     "scale": 400,
+     "threads": 1,
+     "wall_ms": 174,
+     "collections": 32,
+     "lat_p50_us": 256,
+     "lat_p99_us": 1024,
+     "lat_p999_us": 1024,
+     "lat_max_us": 1890,
+     "check": 157898270
+    }
+   ]
+  },
+  "liveheap-2M": {
+   "tinox": [
+    {
+     "cpu_s": 3.37,
+     "rss_mib": 584.3,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1622,
+     "collections": 13,
+     "lat_p50_us": 8,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 188597,
+     "check": 735989926
+    },
+    {
+     "cpu_s": 3.07,
+     "rss_mib": 582.2,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1494,
+     "collections": 13,
+     "lat_p50_us": 8,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 164309,
+     "check": 735989926
+    },
+    {
+     "cpu_s": 3.12,
+     "rss_mib": 583.1,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1521,
+     "collections": 13,
+     "lat_p50_us": 8,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 165504,
+     "check": 735989926
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 4.73,
+     "rss_mib": 478.2,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1307,
+     "collections": 21,
+     "lat_p50_us": 16,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 135768,
+     "check": 735989926
+    },
+    {
+     "cpu_s": 4.79,
+     "rss_mib": 479.1,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1317,
+     "collections": 21,
+     "lat_p50_us": 16,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 148660,
+     "check": 735989926
+    },
+    {
+     "cpu_s": 4.2,
+     "rss_mib": 479.9,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 1345,
+     "collections": 21,
+     "lat_p50_us": 16,
+     "lat_p99_us": 16,
+     "lat_p999_us": 64,
+     "lat_max_us": 151722,
+     "check": 735989926
+    }
+   ]
+  },
+  "mapchurn": {
+   "tinox": [
+    {
+     "cpu_s": 0.77,
+     "rss_mib": 15.0,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 770,
+     "collections": 95,
+     "lat_p50_us": 16,
+     "lat_p99_us": 32,
+     "lat_p999_us": 512,
+     "lat_max_us": 1723,
+     "check": 49997
+    },
+    {
+     "cpu_s": 0.76,
+     "rss_mib": 15.0,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 764,
+     "collections": 95,
+     "lat_p50_us": 16,
+     "lat_p99_us": 16,
+     "lat_p999_us": 512,
+     "lat_max_us": 2023,
+     "check": 49997
+    },
+    {
+     "cpu_s": 0.76,
+     "rss_mib": 14.9,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 763,
+     "collections": 95,
+     "lat_p50_us": 16,
+     "lat_p99_us": 16,
+     "lat_p999_us": 512,
+     "lat_max_us": 1495,
+     "check": 49997
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 0.96,
+     "rss_mib": 14.4,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 811,
+     "collections": 147,
+     "lat_p50_us": 16,
+     "lat_p99_us": 32,
+     "lat_p999_us": 256,
+     "lat_max_us": 1147,
+     "check": 49997
+    },
+    {
+     "cpu_s": 0.98,
+     "rss_mib": 14.1,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 839,
+     "collections": 147,
+     "lat_p50_us": 16,
+     "lat_p99_us": 32,
+     "lat_p999_us": 256,
+     "lat_max_us": 773,
+     "check": 49997
+    },
+    {
+     "cpu_s": 0.97,
+     "rss_mib": 14.4,
+     "scale": 10000000,
+     "threads": 1,
+     "wall_ms": 824,
+     "collections": 147,
+     "lat_p50_us": 16,
+     "lat_p99_us": 32,
+     "lat_p999_us": 256,
+     "lat_max_us": 830,
+     "check": 49997
+    }
+   ]
+  },
+  "bigblocks": {
+   "tinox": [
+    {
+     "cpu_s": 0.48,
+     "rss_mib": 13.8,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 479,
+     "collections": 5715,
+     "lat_p50_us": 1,
+     "lat_p99_us": 16,
+     "lat_p999_us": 32,
+     "lat_max_us": 91,
+     "check": 108288799
+    },
+    {
+     "cpu_s": 0.48,
+     "rss_mib": 13.7,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 476,
+     "collections": 5558,
+     "lat_p50_us": 1,
+     "lat_p99_us": 16,
+     "lat_p999_us": 32,
+     "lat_max_us": 274,
+     "check": 108288799
+    },
+    {
+     "cpu_s": 0.48,
+     "rss_mib": 14.0,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 483,
+     "collections": 5715,
+     "lat_p50_us": 1,
+     "lat_p99_us": 16,
+     "lat_p999_us": 32,
+     "lat_max_us": 92,
+     "check": 108288799
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 4.88,
+     "rss_mib": 13.3,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 1126,
+     "collections": 4447,
+     "lat_p50_us": 2,
+     "lat_p99_us": 64,
+     "lat_p999_us": 128,
+     "lat_max_us": 2979,
+     "check": 108288799
+    },
+    {
+     "cpu_s": 4.56,
+     "rss_mib": 14.2,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 1094,
+     "collections": 4447,
+     "lat_p50_us": 2,
+     "lat_p99_us": 64,
+     "lat_p999_us": 128,
+     "lat_max_us": 757,
+     "check": 108288799
+    },
+    {
+     "cpu_s": 3.24,
+     "rss_mib": 14.4,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 955,
+     "collections": 4447,
+     "lat_p50_us": 2,
+     "lat_p99_us": 64,
+     "lat_p999_us": 128,
+     "lat_max_us": 1433,
+     "check": 108288799
+    }
+   ]
+  },
+  "fragment": {
+   "tinox": [
+    {
+     "cpu_s": 1.16,
+     "rss_mib": 434.1,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 812,
+     "collections": 33,
+     "lat_p50_us": 128,
+     "lat_p99_us": 512,
+     "lat_p999_us": 16384,
+     "lat_max_us": 22215,
+     "check": 200284596
+    },
+    {
+     "cpu_s": 1.24,
+     "rss_mib": 433.5,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 875,
+     "collections": 33,
+     "lat_p50_us": 128,
+     "lat_p99_us": 512,
+     "lat_p999_us": 16384,
+     "lat_max_us": 23832,
+     "check": 200284596
+    },
+    {
+     "cpu_s": 1.17,
+     "rss_mib": 434.6,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 826,
+     "collections": 33,
+     "lat_p50_us": 128,
+     "lat_p99_us": 512,
+     "lat_p999_us": 16384,
+     "lat_max_us": 21166,
+     "check": 200284596
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 1.65,
+     "rss_mib": 507.9,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 748,
+     "collections": 47,
+     "lat_p50_us": 128,
+     "lat_p99_us": 2048,
+     "lat_p999_us": 4096,
+     "lat_max_us": 8063,
+     "check": 200284596
+    },
+    {
+     "cpu_s": 2.31,
+     "rss_mib": 507.7,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 773,
+     "collections": 47,
+     "lat_p50_us": 128,
+     "lat_p99_us": 2048,
+     "lat_p999_us": 4096,
+     "lat_max_us": 8457,
+     "check": 200284596
+    },
+    {
+     "cpu_s": 2.07,
+     "rss_mib": 507.1,
+     "scale": 200000,
+     "threads": 1,
+     "wall_ms": 779,
+     "collections": 47,
+     "lat_p50_us": 128,
+     "lat_p99_us": 2048,
+     "lat_p999_us": 8192,
+     "lat_max_us": 19043,
+     "check": 200284596
+    }
+   ]
+  },
+  "threads-1": {
+   "tinox": [
+    {
+     "cpu_s": 2.79,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2811,
+     "collections": 5573,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 2.81,
+     "rss_mib": 13.8,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2822,
+     "collections": 5573,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 2.82,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 2839,
+     "collections": 5573,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 7.41,
+     "rss_mib": 14.0,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 3513,
+     "collections": 11935,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 8.08,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 3584,
+     "collections": 11935,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    },
+    {
+     "cpu_s": 11.54,
+     "rss_mib": 14.4,
+     "scale": 20000000,
+     "threads": 1,
+     "wall_ms": 4003,
+     "collections": 11935,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 988601007
+    }
+   ]
+  },
+  "threads-2": {
+   "tinox": [
+    {
+     "cpu_s": 3.45,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2451,
+     "collections": 5469,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    },
+    {
+     "cpu_s": 3.42,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2437,
+     "collections": 5467,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    },
+    {
+     "cpu_s": 3.41,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2420,
+     "collections": 5470,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 11.43,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2773,
+     "collections": 7094,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    },
+    {
+     "cpu_s": 6.8,
+     "rss_mib": 14.1,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2188,
+     "collections": 7095,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    },
+    {
+     "cpu_s": 7.29,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 2,
+     "wall_ms": 2306,
+     "collections": 7096,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989302008
+    }
+   ]
+  },
+  "threads-4": {
+   "tinox": [
+    {
+     "cpu_s": 4.43,
+     "rss_mib": 15.4,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2949,
+     "collections": 4899,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    },
+    {
+     "cpu_s": 4.45,
+     "rss_mib": 15.9,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2964,
+     "collections": 4898,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    },
+    {
+     "cpu_s": 4.47,
+     "rss_mib": 17.2,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2982,
+     "collections": 4907,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 10.72,
+     "rss_mib": 13.3,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2033,
+     "collections": 4333,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    },
+    {
+     "cpu_s": 10.64,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2063,
+     "collections": 4332,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    },
+    {
+     "cpu_s": 11.06,
+     "rss_mib": 13.8,
+     "scale": 20000000,
+     "threads": 4,
+     "wall_ms": 2103,
+     "collections": 4318,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989654013
+    }
+   ]
+  },
+  "threads-8": {
+   "tinox": [
+    {
+     "cpu_s": 4.36,
+     "rss_mib": 34.0,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2607,
+     "collections": 2507,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    },
+    {
+     "cpu_s": 4.38,
+     "rss_mib": 36.9,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2619,
+     "collections": 2508,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    },
+    {
+     "cpu_s": 4.42,
+     "rss_mib": 35.7,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2651,
+     "collections": 2544,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 14.22,
+     "rss_mib": 13.8,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2594,
+     "collections": 2739,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    },
+    {
+     "cpu_s": 14.24,
+     "rss_mib": 14.4,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2569,
+     "collections": 2699,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    },
+    {
+     "cpu_s": 13.87,
+     "rss_mib": 14.3,
+     "scale": 20000000,
+     "threads": 8,
+     "wall_ms": 2602,
+     "collections": 2723,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989833035
+    }
+   ]
+  },
+  "threads-16": {
+   "tinox": [
+    {
+     "cpu_s": 4.36,
+     "rss_mib": 106.8,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 2551,
+     "collections": 1776,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    },
+    {
+     "cpu_s": 4.39,
+     "rss_mib": 107.9,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 2562,
+     "collections": 1783,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    },
+    {
+     "cpu_s": 4.37,
+     "rss_mib": 111.7,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 2562,
+     "collections": 1799,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    }
+   ],
+   "boehm": [
+    {
+     "cpu_s": 14.76,
+     "rss_mib": 23.1,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 3204,
+     "collections": 990,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    },
+    {
+     "cpu_s": 14.74,
+     "rss_mib": 23.1,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 3181,
+     "collections": 992,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    },
+    {
+     "cpu_s": 20.34,
+     "rss_mib": 19.2,
+     "scale": 20000000,
+     "threads": 16,
+     "wall_ms": 4555,
+     "collections": 1747,
+     "lat_p50_us": 1,
+     "lat_p99_us": 1,
+     "lat_p999_us": 1,
+     "lat_max_us": 0,
+     "check": 989928627
+    }
+   ]
+  }
+ }
+}

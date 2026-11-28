@@ -156,6 +156,22 @@ class Main
         return Main::churn(n, lat) + id
     }
 
+    fnc liveWork(id: Int64, live: Int64, n: Int64) -> Int64
+    {
+        const lat = Lat::create()
+        return Main::liveheap(live, n, lat) + id
+    }
+
+    // Every thread keeps its own big live heap: collections mark while several mutators are stopped.
+    fnc liveThreads(t: Int64, live: Int64, n: Int64) -> Int64
+    {
+        var tasks: List<Task<Int64>> = []
+        for id in 0..t { tasks.push(spawn Main::liveWork(id, live / t, n / t)) }
+        var sum = 0
+        for task in tasks { sum = (sum + await task) % 1000000007 }
+        return sum
+    }
+
     fnc threads(t: Int64, n: Int64) -> Int64
     {
         var tasks: List<Task<Int64>> = []
@@ -179,6 +195,7 @@ class Main
         else if (w == "mapchurn") { check = Main::mapchurn(scale, lat) }
         else if (w == "bigblocks") { check = Main::bigblocks(scale, lat) }
         else if (w == "fragment") { check = Main::fragment(scale, lat) }
+        else if (w == "liveheap-threads") { check = Main::liveThreads(nthreads, 2000000, scale) }
         else if (w == "threads") { check = Main::threads(nthreads, scale) }
         else { throw "unknown WORKLOAD " + w }
         const wallMs = (tinox_clock_nanos() - started) / 1000000
