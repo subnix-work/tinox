@@ -1,11 +1,14 @@
 # Tinox Programming Language Specification
 
-**Version:** 2.8.0
+**Compiler release:** 2.9.10
 **Status:** Actively developed — self-hosting tooling (LSP, `tinox fmt`, package
 registry client, dev dashboard) and 70+ documented bugfixes deep, not an early
-draft. This document was last verified against the actual compiler/runtime
-source on 2026-10-28. Concurrency and protocol capability summaries are tied to
-working fixtures; remaining limits are distinguished from implemented features.
+draft. The release metadata was updated on 2026-11-28; the feature inventory
+was not exhaustively revalidated line by line for 2.9.10. Treat cited fixtures
+and explicit limitation notes as the evidence boundary; this specification is
+not a claim of complete language-conformance verification. Concurrency and
+protocol capability summaries should be tied to working fixtures, with remaining
+limits distinguished from implemented features.
 
 ---
 
