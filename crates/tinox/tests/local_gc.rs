@@ -111,3 +111,46 @@ fn threaded_allocation_matches_boehm_across_collections() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// #727: a thread returning from a large allocation holds only the block's header pointer for a
+/// moment after it released the heap lock. A collection started by another thread right then used to
+/// free the fresh block (use after free, crashes under load). Many processes at once give the
+/// scheduler enough chances to stop a thread in that window.
+#[test]
+fn a_fresh_large_block_survives_a_collection_that_starts_as_it_is_returned() {
+    let dir = std::env::temp_dir().join(format!("tinox-gc-large-return-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("stress");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/gc_stress/Main.tnx");
+    let build = Command::new(env!("CARGO_BIN_EXE_tinox"))
+        .env("TINOX_GC", "tinox")
+        .env_remove("TINOX_CFLAGS")
+        .args(["build"])
+        .arg(&source)
+        .args(["--release", "-o"])
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    for round in 0..10 {
+        let children: Vec<_> = (0..32)
+            .map(|_| {
+                Command::new("timeout")
+                    .arg("120")
+                    .arg(&exe)
+                    .env("WORKLOAD", "threads")
+                    .env("SCALE", "500000")
+                    .env("THREADS", "8")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for child in children {
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success(), "round {round}: {:?} {}", out.status, String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
