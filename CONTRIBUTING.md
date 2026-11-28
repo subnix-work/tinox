@@ -17,36 +17,44 @@ cargo build --release
 
 ## Testing
 
-`make check` is the single entry point that must pass before any commit
-that touches the compiler:
+`make check` is the single local entry point that must pass before any
+compiler commit:
 
 ```bash
-make check   # clippy + unit tests + e2e/matrix/boundary/stdlib_smoke + dogfood
+make check
 ```
 
-This runs:
+The current `Makefile` gate runs:
 
 - `cargo clippy --release --workspace --all-targets -- -D warnings` — zero
   warnings across the workspace. Justified exceptions are inline
   `#[allow(...)]` with a comment explaining why.
-- `cargo test --release` — Rust unit tests (lexer, parser, typecheck,
-  codegen, …).
-- The e2e suite (`tests/e2e/*.tnx` golden tests, a generated context
-  matrix, boundary tests, and a stdlib smoke gate that exercises every
-  `tinox-core` module once).
-- `dogfood`: builds `examples/` and `benchmarks/`, and builds/tests a
-  downstream project ([jgrep-tinox](https://github.com/subnix-work/jgrep-tinox),
-  checked out as a sibling directory via `DOGFOOD_DIR`, default
-  `../jgrep-tinox`).
+- `test-and-dogfood`: runs `test` and `dogfood` concurrently. `test` uses
+  `cargo-nextest` when available (otherwise `cargo test --profile ci`), and
+  includes the Rust unit tests and all `crates/tinox/tests/*.rs` integration
+  suites, including golden e2e, matrix, boundary and stdlib smoke tests.
+  Do not add the standalone `e2e` target to this aggregate: those suites are
+  already discovered by `test`.
+- `dogfood`: builds `examples/` and `benchmarks/`, then builds/tests the
+  downstream [jgrep-tinox](https://github.com/subnix-work/jgrep-tinox)
+  checkout selected by `DOGFOOD_DIR` (default `../jgrep-tinox`). If that
+  checkout is absent, dogfood reports a skip; that is not downstream
+  compatibility evidence.
+- `grammar-sync`, `workspace-stdlib`, `docs-check`, `ai-eval-test` and
+  `service-benchmark-test`.
 
-The full run takes roughly 15–25 minutes. Two additional targets exist for
-deeper verification but are **not** part of `make check` — run them when
-you suspect a memory or dispatch bug, or before a release:
+The full run time depends on the host and cache state. Additional targets
+exist for deeper verification and are **not** part of `make check`:
 
 ```bash
 make asan      # AddressSanitizer build (-DTINOX_NO_GC), catches overflows/UAF
+make tsan      # ThreadSanitizer checks selected C-runtime concurrency paths
 make checked   # Heap-kind registry (-DTINOX_CHECKED), catches dispatch-on-wrong-type bugs
+make fuzz      # libFuzzer harnesses against their seed corpora
 ```
+
+The scheduled deep-checks workflow runs these additional targets. They cover
+different boundaries from the normal gate and do not replace it.
 
 Enable the pre-push hook (runs `make check` automatically before every
 push) with:
@@ -57,13 +65,17 @@ make install-hooks
 
 ## Adding e2e tests
 
-New end-to-end tests live under `tests/e2e/*.tnx` and use `// expect:`
-directives that are compared line-by-line against stdout. If a test binds
-a network port, pick one that's actually free — grep for existing usage
-first:
+End-to-end fixtures live under `tests/e2e/<scenario>/Main.tnx` and use
+`// expect:` directives that are compared line-by-line against stdout. Tests
+that bind a port should request an OS-assigned port with
+`httpServerCreate(0)` and read it back with `httpServerBoundPort(fd)`, rather
+than reserving a hard-coded port by hand. For a reconnect test that must bind
+the same port again, retain that first assigned port and explicitly rebind it.
+
+To find existing fixtures using the dynamic-port pattern:
 
 ```bash
-grep -rn "httpServerCreate(4" tests/e2e/*.tnx examples/*.tnx
+rg -n 'httpServerCreate\(0\)|httpServerBoundPort' tests/e2e examples
 ```
 
 Tests that exercise `spawn`/`await` (a simulated broker/server over
