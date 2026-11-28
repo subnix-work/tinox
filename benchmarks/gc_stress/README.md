@@ -38,7 +38,7 @@ cache miss per object) and only ~40 ms sweeping. Three changes, measured on the 
   object's children is fetched before they are looked up.
 - The span index had 1024 buckets and chains of ~6 descriptors for a 370 MiB heap; it has 32768.
   Together with the prefetching this halves a single-threaded mark (500 -> 255 ms).
-- Heaps of 32 MiB and more are marked by up to 4 threads (`TINOX_GC_MARKERS=N` overrides, 1 = mark
+- Heaps of 8 MiB and more are marked by up to 4 threads (`TINOX_GC_MARKERS=N` overrides, 1 = mark
   alone; more than 4 gave no further gain on this machine). The helpers are created before the world
   is stopped, because a parked mutator may hold a libc lock that `pthread_create` needs. Mark bits
   are set atomically, work is shared through the collector's mark stack in chunks, and big
@@ -50,5 +50,10 @@ cache miss per object) and only ~40 ms sweeping. Three changes, measured on the 
 | max stall | 523 ms | 166 ms | 149 ms |
 | peak RSS | 667 MiB | 583 MiB | 479 MiB |
 
-Known gaps: `trees`/`fragment` have 2-4x Boehm's max stall (small heaps are still marked by one
-thread), and peak RSS with 16 threads is higher (each thread keeps partially filled spans).
+The threshold started at 32 MiB; lowering it to 8 MiB (same run settings) takes `trees` from 289 to 201 ms
+wall and from 6.7 to 2.8 ms max stall (Boehm 1.5 ms) and changes nothing else. `fragment` spends about
+10 ms per collection (5 ms mark, 4 ms freeing large blocks); its 20 ms max stall also contains mutator
+work and heap growth.
+
+Known gaps: peak RSS with 16 threads is higher (each thread keeps partially filled spans), and
+`fragment`'s max stall is about 2x Boehm's.
