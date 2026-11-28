@@ -68,6 +68,7 @@
 #endif
 #include <link.h>
 #include <linux/futex.h>
+#include <malloc.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
@@ -232,6 +233,10 @@ static void local_init(void) {
         }
     }
 #endif
+    // The collector's own metadata (slab descriptors, large blocks) is allocated under the heap lock, so
+    // extra malloc arenas cannot help it. Each one costs a 2 MiB huge page per thread (THP=always) and
+    // keeps freed blocks away from the thread that frees them: 16 threads used 84 MiB instead of 27.
+    if (!getenv("MALLOC_ARENA_MAX")) mallopt(M_ARENA_MAX, 1);
     if (pthread_key_create(&local_thread_key, local_unregister))
         local_fatal("tinox GC: cannot create exit hook\n");
     struct sigaction action = {0}, old;
@@ -272,6 +277,40 @@ static LocalSpan* available[SMALL_CLASSES];
 // Only allocations with outgoing edges can ever enter the mark stack.
 static size_t large_count, traceable_count;
 static unsigned span_hash(uintptr_t base) { return ((base >> 16) ^ (base >> 29)) & (SPAN_BUCKETS - 1); }
+// Slab memory comes from this pool, not from malloc: glibc serves aligned_alloc from the arena of
+// the allocating thread, and a block freed by the collector's thread stays in the owner's arena, so with
+// many threads the arenas hold several times the live slab memory. Free slabs keep their first page
+// (it holds the list link); the rest is returned to the kernel once more than SPAN_POOL_KEEP are idle.
+enum { SPAN_CHUNK_SPANS = 16, SPAN_POOL_KEEP = 64 };
+static uintptr_t span_pool_head;
+static size_t span_pool_count;
+static uintptr_t span_base_new(void) {
+    if (!span_pool_head) {
+        size_t chunk = (size_t)SPAN_CHUNK_SPANS * SPAN_BYTES;
+        char* raw = mmap(NULL, chunk + SPAN_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (raw == MAP_FAILED) local_fatal("tinox GC: slab allocation failed\n");
+        uintptr_t base = ((uintptr_t)raw + SPAN_BYTES - 1) & ~(uintptr_t)(SPAN_BYTES - 1);
+        if (base > (uintptr_t)raw) munmap(raw, base - (uintptr_t)raw);
+        uintptr_t end = base + chunk, raw_end = (uintptr_t)raw + chunk + SPAN_BYTES;
+        if (raw_end > end) munmap((void*)end, raw_end - end);
+        for (unsigned i = 0; i < SPAN_CHUNK_SPANS; i++) {
+            uintptr_t b = base + (uintptr_t)i * SPAN_BYTES;
+            memcpy((void*)b, &span_pool_head, sizeof(span_pool_head));
+            span_pool_head = b;
+            span_pool_count++;
+        }
+    }
+    uintptr_t b = span_pool_head;
+    memcpy(&span_pool_head, (void*)b, sizeof(span_pool_head));
+    span_pool_count--;
+    return b;
+}
+static void span_base_free(uintptr_t b) {
+    if (span_pool_count >= SPAN_POOL_KEEP) madvise((void*)(b + 4096), SPAN_BYTES - 4096, MADV_DONTNEED);
+    memcpy((void*)b, &span_pool_head, sizeof(span_pool_head));
+    span_pool_head = b;
+    span_pool_count++;
+}
 static LocalSpan* span_find(uintptr_t word) {
     uintptr_t base = word & ~(uintptr_t)(SPAN_BYTES - 1);
     for (LocalSpan* s = span_index[span_hash(base)]; s; s = s->hash_next)
@@ -296,7 +335,7 @@ static LocalSpan* span_new(unsigned shift, uint64_t trace) {
     size_t capacity = (SPAN_BYTES - 2 * SPAN_GUARD) >> shift;
     LocalSpan* s = calloc(1, sizeof(*s) + capacity * sizeof(*s->sizes));
     if (!s) local_fatal("tinox GC: slab descriptor allocation failed\n");
-    s->base = (uintptr_t)aligned_alloc(SPAN_BYTES, SPAN_BYTES);
+    s->base = span_base_new();
     if (!s->base) local_fatal("tinox GC: slab allocation failed\n");
     s->shift = shift;
     s->trace = trace;
@@ -360,7 +399,7 @@ static void span_release(LocalSpan* s) {
     while (*link != s)
         link = &(*link)->hash_next;
     *link = s->hash_next;
-    free((void*)s->base);
+    span_base_free(s->base);
     free(s);
 }
 // Classify packed metadata first. An entirely live slab only needs its marks
