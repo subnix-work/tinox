@@ -55,5 +55,14 @@ wall and from 6.7 to 2.8 ms max stall (Boehm 1.5 ms) and changes nothing else. `
 10 ms per collection (5 ms mark, 4 ms freeing large blocks); its 20 ms max stall also contains mutator
 work and heap growth.
 
-Known gaps: peak RSS with 16 threads is higher (each thread keeps partially filled spans), and
-`fragment`'s max stall is about 2x Boehm's.
+## Peak RSS (span pool, one malloc arena)
+
+With 16 threads the peak RSS was 84-108 MiB (Boehm 23). The 64 KiB slabs came from `aligned_alloc`,
+so they lived in the allocating thread's malloc arena, and every thread's first `calloc` (slab
+descriptors, large blocks) created an arena that cost a 2 MiB huge page (THP=always). Slabs now come
+from a pool of `mmap`ed 1 MiB chunks (idle slabs beyond 64 give their pages back), and the collector
+sets `M_ARENA_MAX=1` unless `MALLOC_ARENA_MAX` is set, since its own metadata is allocated under the
+heap lock anyway. 16 threads: 23-25 MiB; `liveheap-2M` 667 -> 525 MiB (Boehm 480).
+
+Known gaps: `fragment`'s max stall is about 2x Boehm's, and `liveheap-2M`'s is still about 4x on this
+run (163 vs 38 ms; Boehm's varies between 37 and 150 ms from run to run).
