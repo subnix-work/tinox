@@ -1,7 +1,7 @@
 [package]
 name = "collector_probe"
 version = "0.1.0"
-compiler = "2.9.9"
+compiler = "2.9.10"
 
 [native]
 sources = ["roots.c"]

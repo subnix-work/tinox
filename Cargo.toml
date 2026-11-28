@@ -11,17 +11,12 @@ members = [
 ]
 
 [workspace.package]
-version = "2.9.9"
+version = "2.9.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Tino"]
-repository = "https://github.com/subnix-work/tinox"
 
 [workspace.dependencies]
-parking_lot = "0.12"
-unicode-ident = "0.3"
-hashbrown = "0.15"
-rayon = "1.10"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_yaml = "0.9"
 ureq = "2"

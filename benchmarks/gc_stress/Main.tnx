@@ -1,0 +1,205 @@
+// GC stress workloads (compare TINOX_GC=tinox with TINOX_GC=boehm). WORKLOAD=<name> SCALE=<n> THREADS=<t>
+// Prints one key=value line; benchmarks/gc_stress/run.py adds CPU time and peak RSS from outside.
+import tinox.core.debug
+import tinox.core.env
+import Node
+import Lat
+
+class Main
+{
+    fnc make(depth: Int64, seed: Int64) -> Node
+    {
+        var kids: List<Node> = []
+        if (depth > 0)
+        {
+            kids.push(Main::make(depth - 1, seed * 2))
+            kids.push(Main::make(depth - 1, seed * 2 + 1))
+        }
+        return Node { kids: kids, value: seed, label: "n" + seed.toString() }
+    }
+
+    fnc check(n: Node) -> Int64
+    {
+        var sum = n.value
+        for k in n.kids { sum = (sum + Main::check(k)) % 1000000007 }
+        return sum
+    }
+
+    // Short-lived small objects with a small rotating live window.
+    fnc churn(n: Int64, lat: Lat) -> Int64
+    {
+        var ring: List<Node> = []
+        for i in 0..1000 { ring.push(Main::make(1, i)) }
+        var sum = 0
+        var t0 = tinox_clock_nanos()
+        for i in 0..n
+        {
+            const node = Main::make(1, i)
+            ring[i % 1000] = node
+            sum = (sum + node.value) % 1000000007
+            if (i % 256 == 255)
+            {
+                const t1 = tinox_clock_nanos()
+                lat.add(t1 - t0)
+                t0 = t1
+            }
+        }
+        return sum + ring.len()
+    }
+
+    // binary-trees: one long-lived tree plus many short-lived ones.
+    fnc trees(rounds: Int64, lat: Lat) -> Int64
+    {
+        const longLived = Main::make(16, 1)
+        var sum = 0
+        for r in 0..rounds
+        {
+            const t0 = tinox_clock_nanos()
+            const t = Main::make(12, r)
+            sum = (sum + Main::check(t)) % 1000000007
+            lat.add(tinox_clock_nanos() - t0)
+        }
+        return (sum + Main::check(longLived)) % 1000000007
+    }
+
+    // Large live set that survives every collection, plus steady churn that replaces random slots.
+    fnc liveheap(live: Int64, n: Int64, lat: Lat) -> Int64
+    {
+        var heap: List<Node> = []
+        for i in 0..live { heap.push(Main::make(0, i)) }
+        var seed: Int64 = 42
+        var t0 = tinox_clock_nanos()
+        for i in 0..n
+        {
+            seed = (seed * 16807) % 2147483647
+            heap[seed % live] = Main::make(0, i)
+            if (i % 256 == 255)
+            {
+                const t1 = tinox_clock_nanos()
+                lat.add(t1 - t0)
+                t0 = t1
+            }
+        }
+        var sum = 0
+        for h in heap { sum = (sum + h.value) % 1000000007 }
+        return sum
+    }
+
+    // Map insert/overwrite/remove churn with string keys.
+    fnc mapchurn(n: Int64, lat: Lat) -> Int64
+    {
+        var m: Map<String, Int64> = Map::new()
+        var t0 = tinox_clock_nanos()
+        for i in 0..n
+        {
+            m.set("key-" + (i % 50000).toString(), i)
+            if (i % 3 == 0) { m.remove("key-" + ((i + 7) % 50000).toString()) }
+            if (i % 256 == 255)
+            {
+                const t1 = tinox_clock_nanos()
+                lat.add(t1 - t0)
+                t0 = t1
+            }
+        }
+        return m.len()
+    }
+
+    // Large pointer-free blocks (string building) with a bounded window.
+    fnc bigblocks(n: Int64, lat: Lat) -> Int64
+    {
+        var window: List<String> = []
+        for i in 0..32 { window.push("") }
+        var chunk = "0123456789abcdef"
+        for i in 0..12 { chunk = chunk + chunk }
+        var sum = 0
+        for i in 0..n
+        {
+            const t0 = tinox_clock_nanos()
+            const s = chunk + i.toString()
+            window[i % 32] = s
+            sum = (sum + s.len()) % 1000000007
+            lat.add(tinox_clock_nanos() - t0)
+        }
+        return sum
+    }
+
+    // Mixed sizes with random survival: fragmentation / RSS behaviour.
+    fnc fragment(n: Int64, lat: Lat) -> Int64
+    {
+        var window: List<List<Int64>> = []
+        for i in 0..20000 { window.push([]) }
+        var seed: Int64 = 7
+        var sum = 0
+        var t0 = tinox_clock_nanos()
+        for i in 0..n
+        {
+            seed = (seed * 16807) % 2147483647
+            const size = 1 + (seed % 2000)
+            var block: List<Int64> = []
+            for j in 0..size { block.push(j) }
+            sum = (sum + block.len()) % 1000000007
+            seed = (seed * 16807) % 2147483647
+            window[seed % 20000] = block
+            if (i % 64 == 63)
+            {
+                const t1 = tinox_clock_nanos()
+                lat.add(t1 - t0)
+                t0 = t1
+            }
+        }
+        return sum
+    }
+
+    fnc threadWork(id: Int64, n: Int64) -> Int64
+    {
+        const lat = Lat::create()
+        return Main::churn(n, lat) + id
+    }
+
+    fnc liveWork(id: Int64, live: Int64, n: Int64) -> Int64
+    {
+        const lat = Lat::create()
+        return Main::liveheap(live, n, lat) + id
+    }
+
+    // Every thread keeps its own big live heap: collections mark while several mutators are stopped.
+    fnc liveThreads(t: Int64, live: Int64, n: Int64) -> Int64
+    {
+        var tasks: List<Task<Int64>> = []
+        for id in 0..t { tasks.push(spawn Main::liveWork(id, live / t, n / t)) }
+        var sum = 0
+        for task in tasks { sum = (sum + await task) % 1000000007 }
+        return sum
+    }
+
+    fnc threads(t: Int64, n: Int64) -> Int64
+    {
+        var tasks: List<Task<Int64>> = []
+        for id in 0..t { tasks.push(spawn Main::threadWork(id, n / t)) }
+        var sum = 0
+        for task in tasks { sum = (sum + await task) % 1000000007 }
+        return sum
+    }
+
+    fnc main() -> Int32
+    {
+        const w = Env::getVar("WORKLOAD")
+        const scale = Env::getVar("SCALE").toInt()
+        const nthreads = Env::getVar("THREADS").toInt()
+        const lat = Lat::create()
+        const started = tinox_clock_nanos()
+        var check = 0
+        if (w == "churn") { check = Main::churn(scale, lat) }
+        else if (w == "trees") { check = Main::trees(scale, lat) }
+        else if (w == "liveheap") { check = Main::liveheap(2000000, scale, lat) }
+        else if (w == "mapchurn") { check = Main::mapchurn(scale, lat) }
+        else if (w == "bigblocks") { check = Main::bigblocks(scale, lat) }
+        else if (w == "fragment") { check = Main::fragment(scale, lat) }
+        else if (w == "liveheap-threads") { check = Main::liveThreads(nthreads, 2000000, scale) }
+        else if (w == "threads") { check = Main::threads(nthreads, scale) }
+        else { throw "unknown WORKLOAD " + w }
+        const wallMs = (tinox_clock_nanos() - started) / 1000000
+        println("workload=" + w + " scale=" + scale.toString() + " threads=" + nthreads.toString() + " wall_ms=" + wallMs.toString() + " collections=" + Debug::gcCollections().toString() + " lat_p50_us=" + lat.quantile(500).toString() + " lat_p99_us=" + lat.quantile(990).toString() + " lat_p999_us=" + lat.quantile(999).toString() + " lat_max_us=" + lat.maxUs.toString() + " check=" + check.toString())
+        return 0
+    }
+}

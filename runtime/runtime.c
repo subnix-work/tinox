@@ -68,6 +68,7 @@
 #endif
 #include <link.h>
 #include <linux/futex.h>
+#include <malloc.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
@@ -81,12 +82,22 @@ struct LocalBlock {
     max_align_t payload[];
 };
 
+typedef struct LocalSpan LocalSpan;
 typedef struct LocalThread LocalThread;
+enum { LOCAL_CACHE = 128, LOCAL_GATE_OBJECTS = 1024, LOCAL_GATE_BYTES = 65536 };
 struct LocalThread {
     LocalThread* next;
     pid_t tid;
     uintptr_t stack_lo, stack_hi, tls_lo, tls_hi, stopped_sp;
     _Atomic int state;
+    // Allocation fast path: while in_alloc is set the collector may not park this thread, because
+    // the owned span is in a transient state. A signal that arrives meanwhile sets deferred and
+    // the thread re-sends it to itself on leaving the section.
+    volatile sig_atomic_t in_alloc, deferred;
+    // Counters since the last fold into the global ones (written only by this thread; other
+    // threads read them for statistics). They are modular deltas: a free can precede the fold.
+    _Atomic size_t pend_count, pend_bytes, pend_total, pend_since, pend_trace, gate_objects;
+    LocalSpan* cache[LOCAL_CACHE];
 };
 enum { RUNNING, REQUESTED, STOPPED, RELEASED };
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(_Atomic int) == 4, "futex ABI");
@@ -95,13 +106,14 @@ static LocalThread* local_threads;
 static LocalBlock* local_blocks;
 static pthread_mutex_t local_lock = PTHREAD_MUTEX_INITIALIZER;
 static size_t local_count, local_bytes, local_total, local_since, local_collections, local_swept;
-enum { LOCAL_MIN_BUDGET = 1024 * 1024 };
+enum { LOCAL_MIN_BUDGET = 1024 * 1024, LOCAL_PARALLEL_BYTES = 8 * 1024 * 1024 };
 static size_t local_threshold = LOCAL_MIN_BUDGET;
 static pid_t local_pid;
 static volatile unsigned char* fork_cookie;
 static pthread_key_t local_thread_key;
 static pthread_once_t local_init_once = PTHREAD_ONCE_INIT;
 static void local_init(void);
+static void local_retire(LocalThread* t);
 
 static void local_fatal(const char* message) {
     // May be called with other threads suspended inside libc.
@@ -130,6 +142,11 @@ static void local_suspend(int sig) {
     int saved_errno = errno;
     LocalThread* t = local_self;
     if (t && atomic_load(&t->state) == REQUESTED) {
+        if (t->in_alloc) {
+            t->deferred = 1;
+            errno = saved_errno;
+            return;
+        }
         // The kernel signal frame above this stack pointer contains the
         // interrupted register file, including SIMD state and the red zone.
         LOCAL_READ_SP(t->stopped_sp);
@@ -192,6 +209,7 @@ static void local_unregister(void* unused) {
     pthread_setspecific(local_thread_key, NULL);
     pthread_mutex_lock(&local_lock);
     LocalThread* t = local_self;
+    local_retire(t);
     LocalThread** slot = &local_threads;
     while (*slot != t)
         slot = &(*slot)->next;
@@ -215,6 +233,10 @@ static void local_init(void) {
         }
     }
 #endif
+    // The collector's own metadata (slab descriptors, large blocks) is allocated under the heap lock, so
+    // extra malloc arenas cannot help it. Each one costs a 2 MiB huge page per thread (THP=always) and
+    // keeps freed blocks away from the thread that frees them: 16 threads used 84 MiB instead of 27.
+    if (!getenv("MALLOC_ARENA_MAX")) mallopt(M_ARENA_MAX, 1);
     if (pthread_key_create(&local_thread_key, local_unregister))
         local_fatal("tinox GC: cannot create exit hook\n");
     struct sigaction action = {0}, old;
@@ -231,15 +253,15 @@ static void local_init(void) {
 // pointers. Only descriptors, outside the managed payloads, enter the index.
 enum {
     SPAN_BYTES = 65536,
-    SPAN_BUCKETS = 1024,
+    SPAN_BUCKETS = 32768,
     SPAN_GUARD = 16,
     SMALL_CLASSES = 6,
     SMALL_LIMIT = 512,
     SLOT_MARK = 0x8000,
     NO_SLOT = UINT16_MAX
 };
-typedef struct LocalSpan LocalSpan;
 struct LocalSpan {
+    LocalThread* owner; // allocates from this span without the heap lock; NULL = shared
     uintptr_t base;
     LocalSpan *hash_next, *avail_next, **avail_link;
     uint64_t trace;
@@ -255,6 +277,40 @@ static LocalSpan* available[SMALL_CLASSES];
 // Only allocations with outgoing edges can ever enter the mark stack.
 static size_t large_count, traceable_count;
 static unsigned span_hash(uintptr_t base) { return ((base >> 16) ^ (base >> 29)) & (SPAN_BUCKETS - 1); }
+// Slab memory comes from this pool, not from malloc: glibc serves aligned_alloc from the arena of
+// the allocating thread, and a block freed by the collector's thread stays in the owner's arena, so with
+// many threads the arenas hold several times the live slab memory. Free slabs keep their first page
+// (it holds the list link); the rest is returned to the kernel once more than SPAN_POOL_KEEP are idle.
+enum { SPAN_CHUNK_SPANS = 16, SPAN_POOL_KEEP = 64 };
+static uintptr_t span_pool_head;
+static size_t span_pool_count;
+static uintptr_t span_base_new(void) {
+    if (!span_pool_head) {
+        size_t chunk = (size_t)SPAN_CHUNK_SPANS * SPAN_BYTES;
+        char* raw = mmap(NULL, chunk + SPAN_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (raw == MAP_FAILED) local_fatal("tinox GC: slab allocation failed\n");
+        uintptr_t base = ((uintptr_t)raw + SPAN_BYTES - 1) & ~(uintptr_t)(SPAN_BYTES - 1);
+        if (base > (uintptr_t)raw) munmap(raw, base - (uintptr_t)raw);
+        uintptr_t end = base + chunk, raw_end = (uintptr_t)raw + chunk + SPAN_BYTES;
+        if (raw_end > end) munmap((void*)end, raw_end - end);
+        for (unsigned i = 0; i < SPAN_CHUNK_SPANS; i++) {
+            uintptr_t b = base + (uintptr_t)i * SPAN_BYTES;
+            memcpy((void*)b, &span_pool_head, sizeof(span_pool_head));
+            span_pool_head = b;
+            span_pool_count++;
+        }
+    }
+    uintptr_t b = span_pool_head;
+    memcpy(&span_pool_head, (void*)b, sizeof(span_pool_head));
+    span_pool_count--;
+    return b;
+}
+static void span_base_free(uintptr_t b) {
+    if (span_pool_count >= SPAN_POOL_KEEP) madvise((void*)(b + 4096), SPAN_BYTES - 4096, MADV_DONTNEED);
+    memcpy((void*)b, &span_pool_head, sizeof(span_pool_head));
+    span_pool_head = b;
+    span_pool_count++;
+}
 static LocalSpan* span_find(uintptr_t word) {
     uintptr_t base = word & ~(uintptr_t)(SPAN_BYTES - 1);
     for (LocalSpan* s = span_index[span_hash(base)]; s; s = s->hash_next)
@@ -279,7 +335,7 @@ static LocalSpan* span_new(unsigned shift, uint64_t trace) {
     size_t capacity = (SPAN_BYTES - 2 * SPAN_GUARD) >> shift;
     LocalSpan* s = calloc(1, sizeof(*s) + capacity * sizeof(*s->sizes));
     if (!s) local_fatal("tinox GC: slab descriptor allocation failed\n");
-    s->base = (uintptr_t)aligned_alloc(SPAN_BYTES, SPAN_BYTES);
+    s->base = span_base_new();
     if (!s->base) local_fatal("tinox GC: slab allocation failed\n");
     s->shift = shift;
     s->trace = trace;
@@ -291,18 +347,39 @@ static LocalSpan* span_new(unsigned shift, uint64_t trace) {
     span_offer(s);
     return s;
 }
-static void* span_allocate(size_t n, uint64_t trace) {
-    unsigned shift = n <= 16 ? 4 : 32u - (unsigned)__builtin_clz((unsigned)n - 1);
+static unsigned span_shift(size_t n) { return n <= 16 ? 4 : 32u - (unsigned)__builtin_clz((unsigned)n - 1); }
+static unsigned cache_index(unsigned shift, uint64_t trace) {
+    uint64_t h = (trace ^ ((uint64_t)shift << 56)) * 0x9E3779B97F4A7C15ull;
+    return (unsigned)(h >> 57) & (LOCAL_CACHE - 1);
+}
+// Hand the span back to the shared pool.
+static void span_disown(LocalSpan* s) {
+    s->owner = NULL;
+    if (s->used < s->capacity) span_offer(s);
+}
+// Heap lock held. Replace the cache entry for (shift, trace) with a span of that class.
+static void span_claim(LocalThread* t, unsigned shift, uint64_t trace) {
+    unsigned idx = cache_index(shift, trace);
+    if (t->cache[idx]) {
+        span_disown(t->cache[idx]);
+        t->cache[idx] = NULL;
+    }
     LocalSpan* s = available[shift - 4];
     while (s && s->trace != trace)
         s = s->avail_next;
     if (!s) s = span_new(shift, trace);
+    span_withdraw(s);
+    s->owner = t;
+    t->cache[idx] = s;
+}
+// Only the owning thread, inside its in_alloc section, or the collector with every thread stopped.
+static void* span_take(LocalSpan* s, size_t n, unsigned shift) {
     unsigned i = s->free_head == NO_SLOT ? s->cursor++ : s->free_head;
     char* data = (char*)s->base + SPAN_GUARD + (i << shift);
     if (s->free_head != NO_SLOT) memcpy(&s->free_head, data, sizeof(s->free_head));
     if (n == (1u << shift)) s->has_full_width = true;
     s->sizes[i] = n;
-    if (++s->used == s->capacity) span_withdraw(s);
+    s->used++;
     memset(data, 0, n);
     return data;
 }
@@ -314,7 +391,7 @@ static void span_drop(LocalSpan* s, unsigned i) {
     char* p = (char*)s->base + SPAN_GUARD + (i << s->shift);
     memcpy(p, &s->free_head, sizeof(s->free_head));
     s->free_head = i;
-    if (s->used-- == s->capacity) span_offer(s);
+    if (s->used-- == s->capacity && !s->owner) span_offer(s);
 }
 static void span_release(LocalSpan* s) {
     if (s->avail_link) span_withdraw(s);
@@ -322,7 +399,7 @@ static void span_release(LocalSpan* s) {
     while (*link != s)
         link = &(*link)->hash_next;
     *link = s->hash_next;
-    free((void*)s->base);
+    span_base_free(s->base);
     free(s);
 }
 // Classify packed metadata first. An entirely live slab only needs its marks
@@ -362,27 +439,110 @@ typedef struct {
     size_t size;
     uint64_t trace;
 } LocalWork;
+// Parallel marking: the participants share one stack (the collector's own mark stack) and keep
+// a small private one each. Mark bits are then set with atomic operations.
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    LocalWork* work;
+    size_t pending;
+    unsigned parts, idle;
+    _Atomic unsigned waiting;
+    bool done;
+    // Polled by idle participants; alone on its cache line so polling does not slow the lock.
+    _Alignas(64) _Atomic unsigned epoch;
+    char pad[60];
+} MarkShared;
 typedef struct {
     LocalBlock** sorted;
     LocalWork* work;
     size_t pending;
     uintptr_t first, last;
+    MarkShared* shared; // NULL: this marker runs alone
 } LocalMark;
+enum { MARK_LOCAL = 2048, MARK_RING = 16, MARK_CHUNK = 2048, MARK_TAKE = 256, MARK_SPIN = 4000, MARK_MAX_THREADS = 4 };
+// Mark stack space must never run out: every traceable object is pushed at most once.
+static void mark_donate(LocalMark* m, size_t keep) {
+    MarkShared* sh = m->shared;
+    size_t give = m->pending - keep;
+    pthread_mutex_lock(&sh->mu);
+    memcpy(sh->work + sh->pending, m->work, give * sizeof(*m->work));
+    sh->pending += give;
+    atomic_fetch_add_explicit(&sh->epoch, 1, memory_order_release);
+    if (atomic_load_explicit(&sh->waiting, memory_order_relaxed)) pthread_cond_broadcast(&sh->cv);
+    pthread_mutex_unlock(&sh->mu);
+    memmove(m->work, m->work + give, keep * sizeof(*m->work));
+    m->pending = keep;
+}
+static inline void mark_push(LocalMark* m, LocalWork w) {
+    if (m->shared && m->pending == MARK_LOCAL) mark_donate(m, MARK_LOCAL / 2);
+    m->work[m->pending++] = w;
+}
+// Own stack and ring are empty: take work from the shared stack, or learn that all are done.
+static bool mark_refill(LocalMark* m) {
+    MarkShared* sh = m->shared;
+    pthread_mutex_lock(&sh->mu);
+    for (;;) {
+        if (sh->pending) {
+            size_t k = sh->pending < MARK_TAKE ? sh->pending : MARK_TAKE;
+            sh->pending -= k;
+            memcpy(m->work, sh->work + sh->pending, k * sizeof(*m->work));
+            m->pending = k;
+            pthread_mutex_unlock(&sh->mu);
+            return true;
+        }
+        if (++sh->idle == sh->parts) {
+            sh->done = true;
+            atomic_fetch_add_explicit(&sh->epoch, 1, memory_order_release);
+            pthread_cond_broadcast(&sh->cv);
+            pthread_mutex_unlock(&sh->mu);
+            return false;
+        }
+        // Other participants are usually about to donate: poll briefly before sleeping.
+        atomic_fetch_add_explicit(&sh->waiting, 1, memory_order_relaxed);
+        unsigned seen = atomic_load_explicit(&sh->epoch, memory_order_relaxed);
+        pthread_mutex_unlock(&sh->mu);
+        for (int spin = 0; spin < MARK_SPIN; spin++) {
+            if (atomic_load_explicit(&sh->epoch, memory_order_acquire) != seen) break;
+#if defined(__x86_64__)
+            __builtin_ia32_pause();
+#else
+            __asm__ volatile("yield");
+#endif
+        }
+        pthread_mutex_lock(&sh->mu);
+        while (!sh->pending && !sh->done)
+            pthread_cond_wait(&sh->cv, &sh->mu);
+        atomic_fetch_sub_explicit(&sh->waiting, 1, memory_order_relaxed);
+        if (sh->done) {
+            pthread_mutex_unlock(&sh->mu);
+            return false;
+        }
+        sh->idle--;
+    }
+}
 static int local_order(const void* a, const void* b) {
     uintptr_t x = (uintptr_t)*(LocalBlock* const*)a, y = (uintptr_t)*(LocalBlock* const*)b;
     return (x > y) - (x < y);
 }
 static void local_mark(LocalMark* m, LocalBlock* b) {
-    if (b->marked) return;
-    b->marked = true;
-    if (!b->atomic) m->work[m->pending++] = (LocalWork){(uintptr_t)b->payload, b->size, UINT64_MAX};
+    if (__atomic_load_n(&b->marked, __ATOMIC_RELAXED)) return;
+    if (m->shared) {
+        if (__atomic_exchange_n(&b->marked, true, __ATOMIC_RELAXED)) return;
+    } else {
+        b->marked = true;
+    }
+    if (!b->atomic) mark_push(m, (LocalWork){(uintptr_t)b->payload, b->size, UINT64_MAX});
 }
 static void span_mark(LocalMark* m, LocalSpan* s, unsigned i, unsigned offset) {
-    unsigned n = s->sizes[i];
+    unsigned n = __atomic_load_n(&s->sizes[i], __ATOMIC_RELAXED);
     if (!n || (n & SLOT_MARK) || offset > n) return;
-    s->sizes[i] |= SLOT_MARK;
-    if (s->trace)
-        m->work[m->pending++] = (LocalWork){s->base + SPAN_GUARD + (i << s->shift), n, s->trace};
+    if (m->shared) {
+        if (__atomic_fetch_or(&s->sizes[i], SLOT_MARK, __ATOMIC_RELAXED) & SLOT_MARK) return;
+    } else {
+        s->sizes[i] |= SLOT_MARK;
+    }
+    if (s->trace) mark_push(m, (LocalWork){s->base + SPAN_GUARD + (i << s->shift), n, s->trace});
 }
 static inline void span_visit(LocalMark* m, LocalSpan* s, uintptr_t word) {
     unsigned pos = word & (SPAN_BYTES - 1);
@@ -419,7 +579,7 @@ static void local_visit(LocalMark* m, uintptr_t word) {
 // objects can be marked in bulk. The caller already checked the first word
 // and its possible one-past predecessor. All subsequent predecessors are in
 // the run. A vacant slot stays vacant even if an integer names its address.
-static uintptr_t span_mark_run(LocalSpan* s, uintptr_t first, uintptr_t lo, uintptr_t hi) {
+static uintptr_t span_mark_run(LocalMark* m, LocalSpan* s, uintptr_t first, uintptr_t lo, uintptr_t hi) {
     unsigned stride = 1u << s->shift;
     uintptr_t offset = first - (s->base + SPAN_GUARD);
     if ((offset & (stride - 1)) || (offset >> s->shift) >= s->cursor) return lo;
@@ -434,7 +594,11 @@ static uintptr_t span_mark_run(LocalSpan* s, uintptr_t first, uintptr_t lo, uint
         lo += sizeof(next);
     }
     for (; i < end; i++) {
-        if (s->sizes[i]) s->sizes[i] |= SLOT_MARK;
+        if (!s->sizes[i]) continue;
+        if (m->shared)
+            __atomic_fetch_or(&s->sizes[i], SLOT_MARK, __ATOMIC_RELAXED);
+        else
+            s->sizes[i] |= SLOT_MARK;
     }
     return lo;
 }
@@ -458,7 +622,7 @@ static void local_scan(LocalMark* m, uintptr_t lo, uintptr_t hi) {
             memcpy(&next, (const void*)lo, sizeof(next));
             if ((next ^ s->base) >= SPAN_BYTES) break;
             if (!s->trace && next - word == (1u << s->shift)) {
-                lo = span_mark_run(s, word, lo, hi);
+                lo = span_mark_run(m, s, word, lo, hi);
                 if (lo == hi) return;
                 memcpy(&next, (const void*)lo, sizeof(next));
                 if ((next ^ s->base) >= SPAN_BYTES) break;
@@ -483,17 +647,202 @@ static void local_drop(LocalBlock* b) {
     free(b);
 }
 
+static size_t pend_get(const _Atomic size_t* v) { return atomic_load_explicit(v, memory_order_relaxed); }
+static void pend_add(_Atomic size_t* v, size_t d) { atomic_store_explicit(v, pend_get(v) + d, memory_order_relaxed); }
+// Heap lock held; the thread is the caller or is stopped. Move its counters into the global ones.
+static void local_fold(LocalThread* t) {
+    local_count += pend_get(&t->pend_count);
+    local_bytes += pend_get(&t->pend_bytes);
+    local_total += pend_get(&t->pend_total);
+    local_since += pend_get(&t->pend_since);
+    traceable_count += pend_get(&t->pend_trace);
+    atomic_store_explicit(&t->pend_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_bytes, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_total, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_since, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->pend_trace, 0, memory_order_relaxed);
+    atomic_store_explicit(&t->gate_objects, 0, memory_order_relaxed);
+}
+static void local_retire(LocalThread* t) {
+    for (unsigned i = 0; i < LOCAL_CACHE; i++) {
+        if (t->cache[i]) {
+            span_disown(t->cache[i]);
+            t->cache[i] = NULL;
+        }
+    }
+    local_fold(t);
+}
+// Scan one object, or one chunk of a big conservative range.
+static void mark_scan(LocalMark* m, LocalWork w) {
+    if (w.trace == UINT64_MAX) {
+        local_scan(m, w.base, w.base + w.size);
+        return;
+    }
+    uintptr_t words[64];
+    unsigned nw = 0;
+    for (uint64_t bits = w.trace; bits; bits &= bits - 1) {
+        uintptr_t word;
+        memcpy(&word, (const void*)(w.base + __builtin_ctzll(bits) * sizeof(word)), sizeof(word));
+        words[nw++] = word;
+        if (word < SPAN_BYTES) continue;
+        // Fetch the slot metadata while the other children are being looked up.
+        LocalSpan* s = span_find(word);
+        unsigned pos = word & (SPAN_BYTES - 1);
+        if (s && pos >= SPAN_GUARD) __builtin_prefetch(&s->sizes[(pos - SPAN_GUARD) >> s->shift]);
+    }
+    for (unsigned k = 0; k < nw; k++)
+        local_visit(m, words[k]);
+}
+// Drain the mark stack. Popped objects wait in a short ring after a prefetch, so their
+// payload is in cache when they are scanned. Marking order is irrelevant.
+static void mark_drain(LocalMark* m) {
+    LocalWork ring[MARK_RING];
+    unsigned head = 0, fill = 0;
+    for (;;) {
+        while (fill < MARK_RING && m->pending) {
+            LocalWork q = m->work[--m->pending];
+            __builtin_prefetch((const void*)q.base);
+            if (q.size > 64) __builtin_prefetch((const void*)(q.base + 64));
+            ring[(head + fill++) % MARK_RING] = q;
+        }
+        if (!fill) {
+            if (m->shared && mark_refill(m)) continue;
+            return;
+        }
+        LocalWork w = ring[head];
+        head = (head + 1) % MARK_RING;
+        fill--;
+        if (m->shared) {
+            // Cut big ranges into pieces others can take, and feed idle participants.
+            if (w.trace == UINT64_MAX && w.size > MARK_CHUNK) {
+                mark_push(m, (LocalWork){w.base + MARK_CHUNK, w.size - MARK_CHUNK, w.trace});
+                w.size = MARK_CHUNK;
+            }
+            if (m->pending > 32 && atomic_load_explicit(&m->shared->waiting, memory_order_relaxed) &&
+                !__atomic_load_n(&m->shared->pending, __ATOMIC_RELAXED))
+                mark_donate(m, m->pending / 2);
+        }
+        mark_scan(m, w);
+    }
+}
+static void mark_participate(const LocalMark* base) {
+    LocalWork stack[MARK_LOCAL];
+    LocalMark m = *base;
+    m.work = stack;
+    m.pending = 0;
+    mark_drain(&m);
+}
+
+// Persistent markers. They are created before the world is stopped, because a parked mutator
+// may hold a libc lock that pthread_create needs. They never allocate while marking.
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t job_cv, done_cv;
+    unsigned workers, generation, finished;
+    const LocalMark* job;
+    MarkShared sh;
+    bool ready;
+} mark_pool = {.mu = PTHREAD_MUTEX_INITIALIZER,
+               .job_cv = PTHREAD_COND_INITIALIZER,
+               .done_cv = PTHREAD_COND_INITIALIZER,
+               .sh = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER}};
+static int tinox_gc_cpus(void);
+static void* mark_worker(void* arg) {
+    (void)arg;
+    unsigned seen = 0;
+    for (;;) {
+        pthread_mutex_lock(&mark_pool.mu);
+        while (mark_pool.generation == seen)
+            pthread_cond_wait(&mark_pool.job_cv, &mark_pool.mu);
+        seen = mark_pool.generation;
+        const LocalMark* job = mark_pool.job;
+        pthread_mutex_unlock(&mark_pool.mu);
+        mark_participate(job);
+        pthread_mutex_lock(&mark_pool.mu);
+        if (++mark_pool.finished == mark_pool.workers) pthread_cond_signal(&mark_pool.done_cv);
+        pthread_mutex_unlock(&mark_pool.mu);
+    }
+    return NULL;
+}
+// Heap lock held, mutators still running. Returns the number of helper threads (0 = mark alone).
+static unsigned mark_pool_prepare(void) {
+    if (mark_pool.ready) return mark_pool.workers;
+    mark_pool.ready = true;
+    long total = tinox_gc_cpus();
+    const char* ov = getenv("TINOX_GC_MARKERS");
+    if (ov && *ov) {
+        char* end;
+        long v = strtol(ov, &end, 10);
+        if (*end || v < 1 || v > 64) local_fatal("tinox GC: TINOX_GC_MARKERS must be 1..64\n");
+        total = v;
+    } else if (total > MARK_MAX_THREADS) {
+        total = MARK_MAX_THREADS;
+    }
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 512 * 1024);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    unsigned made = 0;
+    for (long i = 1; i < total; i++) {
+        pthread_t tid;
+        if (pthread_create(&tid, &attr, mark_worker, NULL)) break;
+        made++;
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    pthread_attr_destroy(&attr);
+    mark_pool.workers = made;
+    return made;
+}
+// Mark everything reachable from the work already on `m`, using the helpers when there are any.
+static void mark_all(LocalMark* m, unsigned workers) {
+    if (!workers) {
+        mark_drain(m);
+        return;
+    }
+    MarkShared* sh = &mark_pool.sh;
+    sh->work = m->work;
+    sh->pending = m->pending;
+    sh->parts = workers + 1;
+    sh->idle = 0;
+    sh->done = false;
+    atomic_store(&sh->waiting, 0);
+    m->shared = sh;
+    m->pending = 0;
+    pthread_mutex_lock(&mark_pool.mu);
+    mark_pool.job = m;
+    mark_pool.finished = 0;
+    mark_pool.generation++;
+    pthread_cond_broadcast(&mark_pool.job_cv);
+    pthread_mutex_unlock(&mark_pool.mu);
+    mark_participate(m);
+    pthread_mutex_lock(&mark_pool.mu);
+    while (mark_pool.finished != workers)
+        pthread_cond_wait(&mark_pool.done_cv, &mark_pool.mu);
+    pthread_mutex_unlock(&mark_pool.mu);
+    m->shared = NULL;
+}
 // local_lock serializes allocation and thread membership throughout collection.
 // Prepare all scratch space before parking: a mutator may hold a libc lock.
 static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const ucontext_t* registers) {
-    if (!local_count) {
+    size_t threads = 0, pending = 0;
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        threads++;
+        pending += pend_get(&t->gate_objects);
+    }
+    if (!local_count && !pending) {
         local_collections++;
         local_since = 0;
         return;
     }
     LocalMark m = {.first = UINTPTR_MAX};
-    if (traceable_count) {
-        m.work = reallocarray(NULL, traceable_count, sizeof(*m.work));
+    unsigned workers = local_bytes >= LOCAL_PARALLEL_BYTES ? mark_pool_prepare() : 0;
+    // Running threads add at most LOCAL_GATE_OBJECTS objects each before they block on the lock.
+    size_t work_slots = traceable_count + threads * (LOCAL_GATE_OBJECTS + 8);
+    if (work_slots) {
+        m.work = reallocarray(NULL, work_slots, sizeof(*m.work));
         if (!m.work) local_fatal("tinox GC: mark stack allocation failed\n");
     }
     if (large_count) {
@@ -517,6 +866,8 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t != local_self) local_await(t, REQUESTED);
     }
+    for (LocalThread* t = local_threads; t; t = t->next)
+        local_retire(t);
     local_scan(&m, (uintptr_t)__data_start, (uintptr_t)_end);
     local_scan(&m, (uintptr_t)registers, (uintptr_t)(registers + 1));
     for (LocalThread* t = local_threads; t; t = t->next) {
@@ -528,19 +879,7 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     }
     for (size_t i = 0; i < large_count; i++)
         if (m.sorted[i]->permanent) local_mark(&m, m.sorted[i]);
-    while (m.pending) {
-        LocalWork w = m.work[--m.pending];
-        if (w.trace == UINT64_MAX) {
-            local_scan(&m, w.base, w.base + w.size);
-        } else {
-            for (uint64_t bits = w.trace; bits; bits &= bits - 1) {
-                uintptr_t word;
-                memcpy(&word, (const void*)(w.base + __builtin_ctzll(bits) * sizeof(word)),
-                       sizeof(word));
-                local_visit(&m, word);
-            }
-        }
-    }
+    mark_all(&m, workers);
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t == local_self) continue;
         atomic_store(&t->state, RELEASED);
@@ -581,31 +920,72 @@ static void local_lock_heap(void) {
     local_require_thread();
     pthread_mutex_lock(&local_lock);
 }
+// Re-send the deferred stop request to ourselves now that no span is in a transient state.
+static void local_park_deferred(LocalThread* t) {
+    t->deferred = 0;
+    if (syscall(SYS_tgkill, local_pid, t->tid, SIGUSR2)) local_fatal("tinox GC: cannot park thread\n");
+}
+// Heap lock held: fold this thread's counters, collect if the budget is spent, claim a span.
+static void local_refill(LocalThread* t, unsigned shift, uint64_t trace) {
+    local_fold(t);
+    if (local_since >= local_threshold) local_collect_locked();
+    span_claim(t, shift, trace);
+}
+static void* local_allocate_small(size_t n, uint64_t trace) {
+    local_require_thread();
+    LocalThread* t = local_self;
+    unsigned shift = span_shift(n);
+    unsigned idx = cache_index(shift, trace);
+    for (;;) {
+        // The cache entry is read inside the section: a collection that parked this thread
+        // before it could take the span may have released or reassigned it.
+        t->in_alloc = 1;
+        atomic_signal_fence(memory_order_seq_cst);
+        LocalSpan* s = t->cache[idx];
+        void* data = NULL;
+        if (s && s->shift == shift && s->trace == trace && s->used < s->capacity &&
+            pend_get(&t->gate_objects) < LOCAL_GATE_OBJECTS && pend_get(&t->pend_since) < LOCAL_GATE_BYTES) {
+            data = span_take(s, n, shift);
+            pend_add(&t->pend_count, 1);
+            pend_add(&t->pend_bytes, n);
+            pend_add(&t->pend_total, n);
+            pend_add(&t->pend_since, n);
+            pend_add(&t->gate_objects, 1);
+            if (trace) pend_add(&t->pend_trace, 1);
+        }
+        atomic_signal_fence(memory_order_seq_cst);
+        t->in_alloc = 0;
+        if (t->deferred) local_park_deferred(t);
+        if (data) return data;
+        pthread_mutex_lock(&local_lock);
+        local_refill(t, shift, trace);
+        pthread_mutex_unlock(&local_lock);
+    }
+}
 static void* local_allocate_trace(size_t n, uint64_t trace, bool permanent) {
     if (n > SIZE_MAX - sizeof(LocalBlock)) local_fatal("tinox GC: allocation size overflow\n");
     if (!n) n = 1;
+    if (n <= SMALL_LIMIT && !permanent) return local_allocate_small(n, trace);
     local_lock_heap();
     if (local_since >= local_threshold) local_collect_locked();
-    void* result;
-    if (n <= SMALL_LIMIT && !permanent) {
-        result = span_allocate(n, trace);
-    } else {
-        LocalBlock* b = calloc(1, sizeof(*b) + n);
-        if (!b) local_fatal("tinox GC: allocation failed\n");
-        b->size = n;
-        b->atomic = !trace;
-        b->permanent = permanent;
-        b->next = local_blocks;
-        if (local_blocks) local_blocks->prev = b;
-        local_blocks = b;
-        result = b->payload;
-        large_count++;
-    }
+    LocalBlock* b = calloc(1, sizeof(*b) + n);
+    if (!b) local_fatal("tinox GC: allocation failed\n");
+    b->size = n;
+    b->atomic = !trace;
+    b->permanent = permanent;
+    b->next = local_blocks;
+    if (local_blocks) local_blocks->prev = b;
+    local_blocks = b;
+    large_count++;
     local_count++;
     if (trace) traceable_count++;
     local_bytes += n;
     local_total += n;
     local_since += n;
+    // Once the lock is released a collection can start at any instruction. The compiler would keep
+    // `b`, the block header below the payload, live across the unlock, and the collector only
+    // recognises pointers into the payload. The payload pointer itself must be what is live here.
+    void* volatile result = b->payload;
     pthread_mutex_unlock(&local_lock);
     return result;
 }
@@ -619,7 +999,21 @@ static void local_free(void* p) {
     if (!p) return;
     local_lock_heap();
     LocalSpan* s = span_find((uintptr_t)p);
-    if (s) {
+    if (s && s->owner) {
+        // Another thread allocates from this span without the lock: leave the object to the
+        // collector. Our own span can be updated directly; its counters are still pending.
+        LocalThread* t = local_self;
+        if (s->owner == t) {
+            unsigned i = ((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift;
+            pend_add(&t->pend_bytes, -(size_t)s->sizes[i]);
+            pend_add(&t->pend_count, -(size_t)1);
+            if (s->trace) pend_add(&t->pend_trace, -(size_t)1);
+            s->sizes[i] = 0;
+            memcpy((char*)s->base + SPAN_GUARD + (i << s->shift), &s->free_head, sizeof(s->free_head));
+            s->free_head = i;
+            s->used--;
+        }
+    } else if (s) {
         unsigned i = ((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift;
         span_drop(s, i);
         if (!s->used) span_release(s);
@@ -671,6 +1065,12 @@ static void GC_gcollect(void) {
 static size_t local_stat(const size_t* counter) {
     local_lock_heap();
     size_t n = *counter;
+    // Threads count in their own cache until they fold; add what they have not published yet.
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        if (counter == &local_bytes) n += pend_get(&t->pend_bytes);
+        if (counter == &local_total) n += pend_get(&t->pend_total);
+        if (counter == &local_since) n += pend_get(&t->pend_since);
+    }
     pthread_mutex_unlock(&local_lock);
     return n;
 }
@@ -2529,6 +2929,9 @@ static const TinoxLimits* tinox_limits(void) {
     pthread_once(&g_limits_once, tinox_limits_init_once);
     return &g_limits;
 }
+
+// CPUs the process may use (affinity, cgroup quota, TINOX_CPUS); sizes the collector's marker pool.
+__attribute__((unused)) static int tinox_gc_cpus(void) { return (int)tinox_limits()->cpus; }
 
 // Reserves one slot in a counter bounded by `max`; 0 when exhausted.
 static int tinox_budget_acquire(atomic_llong* active, atomic_llong* peak, int64_t max) {

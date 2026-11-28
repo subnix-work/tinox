@@ -1,0 +1,40 @@
+// Log2 histogram (microseconds) of per-batch latency, to report p50/p99/max of the stalls a mutator sees.
+class Lat
+{
+    var buckets: List<Int64>
+    var maxUs: Int64
+    var total: Int64
+
+    fnc create() -> Lat
+    {
+        var b: List<Int64> = []
+        for i in 0..40 { b.push(0) }
+        return Lat { buckets: b, maxUs: 0, total: 0 }
+    }
+
+    fn add(ns: Int64) -> Nothing
+    {
+        var us = ns / 1000
+        if (us > this.maxUs) { this.maxUs = us }
+        var k = 0
+        while (us > 1 && k < 39) { us = us / 2
+            k = k + 1 }
+        this.buckets[k] = this.buckets[k] + 1
+        this.total = this.total + 1
+    }
+
+    // Upper bound (us) of the bucket holding quantile q (0..1000 permille).
+    fn quantile(permille: Int64) -> Int64
+    {
+        const want = (this.total * permille + 999) / 1000
+        var seen = 0
+        var k = 0
+        while (k < 40)
+        {
+            seen = seen + this.buckets[k]
+            if (seen >= want) { return 1 << k }
+            k = k + 1
+        }
+        return this.maxUs
+    }
+}

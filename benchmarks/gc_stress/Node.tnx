@@ -1,0 +1,6 @@
+class Node
+{
+    var kids: List<Node>
+    var value: Int64
+    var label: String
+}
